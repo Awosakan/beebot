@@ -65,6 +65,36 @@ graph TD
 
 ---
 
+## 🔌 Donanım Bağlantı Şeması
+
+```mermaid
+graph TD
+    Batarya[4S LiPo Batarya] --> PowerModule[APM Power Module Voltaj/Akım]
+    PowerModule --> AcilStop[Mantar Acil Stop Butonu]
+    AcilStop --> PDB[Güç Dağıtım Kartı]
+    
+    PDB -->|Ana Güç| ESC1[Sol ESC]
+    PDB -->|Ana Güç| ESC2[Sağ ESC]
+    
+    PDB -->|12V UBEC| Hub[Endüstriyel Type-C Hub 12V IN]
+    PDB -->|5V UBEC| STM32[STM32F407G-DISC1]
+    
+    Hub <-->|Veri + Şarj| OP6[OnePlus 6 Type-C Portu]
+    
+    Cam1[Sol Kamera 120°] -->|USB| Hub
+    Cam2[Sağ Kamera 120°] -->|USB| Hub
+    LIDAR[RPLIDAR A1] -->|USB| Hub
+    GPS[Ublox GPS] -->|USB| Hub
+    STM32 <-->|USB/UART| Hub
+    
+    PowerModule -->|Analog Veri| STM32
+    BNO055[BNO055 IMU + Pusula] -->|I2C| STM32
+    Sizinti[Sızıntı Sensörü] -->|GPIO/Digital| STM32
+    Ultrasonik[JSN-SR04T Ultrasonik] -->|Trigger/Echo| STM32
+```
+
+---
+
 ## 📊 En Ufak Görev Dağılımı ve Görev Dağılım Matrisi
 
 Projedeki yazılımsal ve donanımsal işlevlerin, kod dosyaları, sınıf/fonksiyon seviyesinde en küçük görev dağılımı aşağıdaki tabloda verilmiştir:

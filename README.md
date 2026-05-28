@@ -65,6 +65,36 @@ graph TD
 
 ---
 
+## 🔌 Hardware Connection Schematic
+
+```mermaid
+graph TD
+    Battery[4S LiPo Battery] --> PowerModule[APM Power Module Voltage/Current]
+    PowerModule --> EStop[Mushroom E-Stop Button]
+    EStop --> PDB[Power Distribution Board]
+    
+    PDB -->|Main Power| ESC1[Left ESC]
+    PDB -->|Main Power| ESC2[Right ESC]
+    
+    PDB -->|12V UBEC| Hub[Industrial Type-C Hub 12V IN]
+    PDB -->|5V UBEC| STM32[STM32F407G-DISC1]
+    
+    Hub <-->|Data + Charge| OP6[OnePlus 6 Type-C Port]
+    
+    Cam1[Left Camera 120°] -->|USB| Hub
+    Cam2[Right Camera 120°] -->|USB| Hub
+    LIDAR[RPLIDAR A1] -->|USB| Hub
+    GPS[Ublox GPS] -->|USB| Hub
+    STM32 <-->|USB/UART| Hub
+    
+    PowerModule -->|Analog Data| STM32
+    BNO055[BNO055 IMU + Compass] -->|I2C| STM32
+    Leak[Leak Sensor] -->|GPIO/Digital| STM32
+    Ultrasonic[JSN-SR04T Ultrasonic] -->|Trigger/Echo| STM32
+```
+
+---
+
 ## 📊 Work Breakdown and Task Allocation Matrix
 
 Detailed breakdown of high-level and low-level software responsibilities, mapped directly to their respective source files and class components:
