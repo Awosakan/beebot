@@ -1,5 +1,6 @@
 #include "safety.h"
 #include "protocol.h"
+#include "main.h"
 #include <math.h>
 
 static volatile SafetyStatus_t safety_state;
@@ -18,14 +19,23 @@ void safety_init(float initial_voltage, float initial_yaw) {
     safety_state.stall_timer = 0;
     safety_state.last_yaw_for_stall = initial_yaw;
     safety_state.emergency_triggered = 0;
+    safety_state.leak_detected = 0;
     telemetry_wd_timer = 0;
     navigation_wd_timer = 0;
     safety_wd_timer = 0;
 }
 
 void safety_update(float raw_voltage, float current_yaw, float left_cmd, float right_cmd, uint32_t dt_ms) {
+    // 0. Su Sızıntı Sensörü denetimi (PA1 - Pull-up aktif, LOW = Sızıntı var)
+    if (HAL_GPIO_ReadPin(LEAK_SENSOR_PORT, LEAK_SENSOR_PIN) == GPIO_PIN_RESET) {
+        safety_state.leak_detected = 1;
+        safety_state.system_mode = MODE_EMERGENCY; // Su sızıntısında motorları hemen kilitle!
+    } else {
+        safety_state.leak_detected = 0;
+    }
+
     // 1. Acil Durdurma Kesmesi kontrolü (Latching - kilitli koruma)
-    if (safety_state.emergency_triggered) {
+    if (safety_state.emergency_triggered || safety_state.leak_detected) {
         safety_state.system_mode = MODE_EMERGENCY;
         return;
     }
@@ -44,7 +54,7 @@ void safety_update(float raw_voltage, float current_yaw, float left_cmd, float r
     }
 
     // 4. Haberleşme Watchdog Sayacı
-    if (safety_state.system_mode == MODE_AUTO || safety_state.system_mode == MODE_MANUAL) {
+    if (safety_state.system_mode == MODE_AUTO) {
         safety_state.watchdog_timer += dt_ms;
         if (safety_state.watchdog_timer >= WATCHDOG_TIMEOUT_MS) {
             safety_state.system_mode = MODE_FAILSAFE;

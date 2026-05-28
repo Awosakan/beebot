@@ -131,6 +131,90 @@ class YOLOInferenceWorker(threading.Thread):
         self.running = False
 
 
+class LidarWorker(threading.Thread):
+    """
+    RPLIDAR A1 lazer tarayıcıdan asenkron veri okuyan thread sınıfı.
+    Gelen noktaları filtreleyip downsample eder ve costmap'e engel olarak beslenmesini sağlar.
+    """
+    def __init__(self, port="/dev/ttyUSB0", yaw_offset=0.0):
+        super().__init__(daemon=True)
+        self.port = port
+        self.yaw_offset = yaw_offset
+        self.running = False
+        self.lock = threading.Lock()
+        self.latest_points = [] # List of (distance_m, bearing_rad)
+        self.lidar = None
+
+    def get_latest_points(self):
+        with self.lock:
+            pts = list(self.latest_points)
+            self.latest_points.clear() # Okuduktan sonra temizle
+            return pts
+
+    def run(self):
+        try:
+            from rplidar import RPLidar
+        except ImportError:
+            logger.error("RPLidar kütüphanesi yüklü değil! 'pip install rplidar-roboticia' yapılması gerekir.")
+            return
+
+        self.running = True
+        logger.info(f"LIDAR bağlantısı kuruluyor: {self.port}")
+        
+        while self.running:
+            try:
+                self.lidar = RPLidar(self.port)
+                info = self.lidar.get_info()
+                logger.info(f"LIDAR bağlantısı başarılı: {info}")
+                
+                for scan in self.lidar.iter_scans(max_buf_meas=500):
+                    if not self.running:
+                        break
+                        
+                    points = []
+                    for qual, angle, dist_mm in scan:
+                        dist_m = dist_mm / 1000.0
+                        if dist_m < 0.45 or dist_m > 12.0:
+                            continue
+                            
+                        angle_calib = (angle + self.yaw_offset) % 360.0
+                        bearing_rad = math.radians(angle_calib)
+                        if bearing_rad > math.pi:
+                            bearing_rad -= 2.0 * math.pi
+                            
+                        points.append((dist_m, bearing_rad))
+                    
+                    bins = {}
+                    for dist_m, bearing_rad in points:
+                        deg = math.degrees(bearing_rad)
+                        bin_idx = int((deg + 180.0) / 5.0)
+                        if bin_idx not in bins or dist_m < bins[bin_idx][0]:
+                            bins[bin_idx] = (dist_m, bearing_rad)
+                            
+                    with self.lock:
+                        self.latest_points = list(bins.values())
+                        
+            except Exception as e:
+                logger.error(f"LIDAR Okuma Hatası: {e}. 2 saniye sonra yeniden bağlanılacak...")
+                if self.lidar:
+                    try:
+                        self.lidar.disconnect()
+                    except:
+                        pass
+                    self.lidar = None
+                time.sleep(2.0)
+
+    def stop(self):
+        self.running = False
+        if self.lidar:
+            try:
+                self.lidar.stop()
+                self.lidar.disconnect()
+            except:
+                pass
+            self.lidar = None
+
+
 class GCSListener(threading.Thread):
     """
     Asenkron GCS Komut Dinleyici.
@@ -344,10 +428,23 @@ class IDANode:
         self.camera_frozen = False
         self.last_frame = None
         self.frozen_frames_counter = 0
-        self.grabber = None
         
-        # 6. YOLO Asenkron İşçi Thread'i
-        self.yolo_worker = YOLOInferenceWorker(self.detector)
+        # Çoklu kamera ve YOLO worker'larının tanımlanması
+        self.video_sources = self.config.get("video_sources", [0])
+        if not isinstance(self.video_sources, list):
+            self.video_sources = [self.video_sources]
+            
+        self.yolo_workers = [YOLOInferenceWorker(self.detector) for _ in self.video_sources]
+        self.grabbers = []
+        self.caps = []
+        
+        # LIDAR Asenkron İşçi Thread'i
+        self.lidar_enabled = self.config.get("lidar_enabled", False)
+        self.lidar_worker = None
+        if self.lidar_enabled:
+            lidar_port = self.config.get("lidar_port", "/dev/ttyUSB0")
+            lidar_yaw_offset = self.config.get("lidar_yaw_offset", 0.0)
+            self.lidar_worker = LidarWorker(port=lidar_port, yaw_offset=lidar_yaw_offset)
         
         # 6. Yerel Engel Haritası (Costmap)
         self.costmap = LocalCostmap(
@@ -487,47 +584,52 @@ class IDANode:
         self.gcs_listener = GCSListener(self)
         self.gcs_listener.start()
         
-        # 4. Kamera Başlatılması
-        cap = cv2.VideoCapture(self.video_source)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        cap.set(cv2.CAP_PROP_FPS, 24) # Şartname minimum 24 FPS
+        # 4. Kameraların Başlatılması
+        self.caps = []
+        self.grabbers = []
+        camera_bearing_offsets = self.config.get("camera_bearing_offsets_deg", [0.0])
         
-        # Görev 1.8: Kamera beyaz dengesi ve otomatik pozlamanın kilitlenmesi
-        if cap.isOpened():
-            # OpenCV üzerinden manuel mod ayarları (Destekleyen kameralar için)
-            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1) # 1 = Manual Mode
-            cap.set(cv2.CAP_PROP_AUTO_WB, 0)       # 0 = Manual Mode
+        for idx, src in enumerate(self.video_sources):
+            cap = cv2.VideoCapture(src)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_FPS, 24)
             
-            # Linux altında V4L2 ile kesin kilitleme
-            if sys.platform.startswith('linux'):
-                try:
-                    os.system("v4l2-ctl -c exposure_auto=1")
-                    os.system("v4l2-ctl -c white_balance_temperature_auto=0")
-                    logger.info("Performans Optimizasyonu: Linux V4L2 üzerinden otomatik pozlama ve beyaz dengesi kilitlendi.")
-                except Exception as e:
-                    logger.warning(f"V4L2 kamera kilitleme komutu başarısız: {e}")
-        else:
-            logger.error("Kamera açılamadı! Sistem yedek (simüle) görüntü moduna geçiyor.")
-            
-        # Asenkron kamera grabber thread'ini başlat (Hata: 255 çözümü)
-        if cap.isOpened():
-            self.grabber = VideoGrabber(cap)
-            self.grabber.start()
-            logger.info("Asenkron Kamera Grabber thread başlatıldı.")
-            
-            # Kamera ısınma (warmup) aşaması: İlk 10 kareyi geçiştir (Lens flare ve pozlama dengesi için - Görev 10)
+            if cap.isOpened():
+                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1) # Manual
+                cap.set(cv2.CAP_PROP_AUTO_WB, 0)       # Manual
+                if sys.platform.startswith('linux'):
+                    try:
+                        os.system(f"v4l2-ctl -d /dev/video{src} -c exposure_auto=1")
+                        os.system(f"v4l2-ctl -d /dev/video{src} -c white_balance_temperature_auto=0")
+                    except Exception as e:
+                        logger.warning(f"V4L2 kamera {src} kilitleme komutu başarısız: {e}")
+                
+                grabber = VideoGrabber(cap)
+                grabber.start()
+                self.caps.append(cap)
+                self.grabbers.append((grabber, camera_bearing_offsets[idx] if idx < len(camera_bearing_offsets) else 0.0))
+                logger.info(f"Asenkron Kamera Grabber {src} başlatıldı.")
+            else:
+                logger.error(f"Kamera {src} açılamadı!")
+                
+        # Kamera warmup (sadece açılan ilk kamera üzerinden)
+        if self.grabbers:
             logger.info("Kamera warmup başlatıldı. Pozlama dengeleniyor...")
             for _ in range(10):
                 time.sleep(0.1)
-                self.grabber.read()
+                self.grabbers[0][0].read()
             logger.info("Kamera warmup tamamlandı.")
-        else:
-            self.grabber = None
             
-        # Asenkron YOLO çıkarım thread'ini başlat (Görev 3)
-        self.yolo_worker.start()
-        logger.info("Asenkron YOLO Çıkarım Worker thread başlatıldı.")
+        # Asenkron YOLO çıkarım thread'lerini başlat
+        for idx, worker in enumerate(self.yolo_workers):
+            worker.start()
+            logger.info(f"Asenkron YOLO Çıkarım Worker thread {idx} başlatıldı.")
+            
+        # 4.5. LIDAR İşçisini Başlat
+        if self.lidar_worker:
+            self.lidar_worker.start()
+            logger.info("Asenkron LIDAR Worker thread başlatıldı.")
             
         logger.info("İDA otonomi düğümü başlatıldı. Görev tetiklenmesi bekleniyor...")
         
@@ -605,75 +707,93 @@ class IDANode:
                     self.mission.transition_to(STATE_PARKUR1)
                     auto_started = True
                 
-                # Görev 1.6: Kamera Bağlantı Durum Kontrolü
-                if not cap.isOpened() or self.grabber is None:
-                    if isinstance(self.ser, MockSerial):
-                        # Simülasyonda yapay görüntü üret
-                        ret, frame = True, self._create_test_frame()
-                    else:
-                        # Gerçek yarışmada kamera bağlantısı koptu
-                        logger.error("Failsafe: Kamera bağlantısı koptu!")
-                        self.camera_lost = True
-                        ret, frame = False, None
-                else:
-                    ret, frame = self.grabber.read()
-                    if not ret:
-                        if isinstance(self.ser, MockSerial):
-                            ret, frame = True, self._create_test_frame()
-                        else:
-                            logger.error("Failsafe: Kameradan kare okunamıyor (kablo çıkmış olabilir)!")
-                            self.camera_lost = True
+                # Görev 1.6: Kamera Bağlantı Durum Kontrolü ve Görüntü Toplama
+                all_detections = []
+                frames_to_log = []
+                camera_lost = True
                 
-                if ret and frame is not None:
-                    # Görev 1.6: Görüntü Donması Kontrolü
+                pitch = self.mission.current_pitch
+                roll = self.mission.current_roll
+                
+                # Eğer hiç aktif kamera yoksa ve simülasyondaysak yapay kare üret
+                if not self.grabbers:
+                    if isinstance(self.ser, MockSerial):
+                        ret, frame = True, self._create_test_frame()
+                        if ret and frame is not None:
+                            camera_lost = False
+                            frames_to_log.append(frame)
+                            self.yolo_workers[0].update_frame(frame, pitch, roll)
+                            all_detections.extend(self.yolo_workers[0].get_latest_detections())
+                    else:
+                        logger.error("Failsafe: Hiçbir kamera aktif değil!")
+                else:
+                    for idx, (grabber, offset_deg) in enumerate(self.grabbers):
+                        ret, frame = grabber.read()
+                        if ret and frame is not None:
+                            camera_lost = False
+                            worker = self.yolo_workers[idx]
+                            worker.update_frame(frame, pitch, roll)
+                            dets = worker.get_latest_detections()
+                            
+                            # Açısal offset (bearing) uygula
+                            offset_rad = math.radians(offset_deg)
+                            for det in dets:
+                                det["bearing"] += offset_rad
+                                
+                            all_detections.extend(dets)
+                            frames_to_log.append(frame)
+                            
+                # LIDAR verilerini de engellere ekle
+                if self.lidar_worker and self.lidar_worker.running:
+                    lidar_pts = self.lidar_worker.get_latest_points()
+                    for dist, bearing in lidar_pts:
+                        all_detections.append({
+                            "class": "yellow_obstacle",
+                            "bbox": [0, 0, 0, 0],
+                            "confidence": 0.90,
+                            "distance": dist,
+                            "bearing": bearing,
+                            "is_truncated": False
+                        })
+                
+                if not camera_lost and frames_to_log:
+                    self.camera_lost = False
+                    
+                    # Görev 1.6: Görüntü Donması Kontrolü (Ana kamera olan ilk kameraya göre)
+                    first_frame = frames_to_log[0]
                     if self.last_frame is not None and not isinstance(self.ser, MockSerial):
-                        diff = cv2.absdiff(frame, self.last_frame)
+                        diff = cv2.absdiff(first_frame, self.last_frame)
                         mean_diff = np.mean(diff)
-                        if mean_diff < 0.05:  # Kareler birebir aynı veya çok yakınsa donma algılanır
+                        if mean_diff < 0.05:
                             self.frozen_frames_counter += 1
-                            if self.frozen_frames_counter >= 24:  # ~1 saniye (24 kare) boyunca donma
+                            if self.frozen_frames_counter >= 24:
                                 self.camera_frozen = True
                                 logger.error("Failsafe: Kamera görüntüsü dondu!")
                         else:
                             self.frozen_frames_counter = 0
-                    self.last_frame = frame.copy()
-                    
-                    # Görüntü İşleme ve Duba Tespiti (Görev 1.5: Pitch/Roll yalpalama telafisi dahil)
-                    pitch = self.mission.current_pitch
-                    roll = self.mission.current_roll
-                    
-                    # YOLO worker thread'ine en güncel kareyi ve yönelim verilerini besle (Görev 3)
-                    self.yolo_worker.update_frame(frame, pitch, roll)
-                    
-                    # YOLO worker'dan o anki en güncel duba listesini asenkron olarak al
-                    detections = self.yolo_worker.get_latest_detections()
+                    self.last_frame = first_frame.copy()
                     
                     # Görev Durum Makinesi Adımı (Görüntü + Harita + Planlama)
-                    self.mission.process_step(detections, self.costmap)
+                    self.mission.process_step(all_detections, self.costmap)
                     
-                    # Tespitleri ekrana çiz (MP4 video kaydı için)
-                    annotated_frame = self.detector.draw_detections(frame, detections)
-                    
-                    # Log kuyruğuna çerçeveyi asenkron yazılmak üzere ekle
+                    # Tespitleri ekrana çiz (MP4 video kaydı için ilk kamerayı kullanıyoruz)
+                    annotated_frame = self.detector.draw_detections(first_frame, all_detections)
                     self.logger_manager.log_frame(annotated_frame)
                     
-                    # Görsel arayüz (Ekranlı testler için - telefonda arka planda çalışırken kapatılabilir)
                     if "DISPLAY" in os.environ:
                         cv2.imshow("IDA Autonomy Monitor", annotated_frame)
                         if cv2.waitKey(1) & 0xFF == ord('q'):
                             break
                 else:
-                    # Kamera hatası veya kopması durumunda failsafe durum makinesi adımı (Failsafe ve Log devamlılığı)
-                    detections = []
-                    self.mission.process_step(detections, self.costmap)
+                    # Kamera hatası veya kopması durumunda failsafe durum makinesi adımı (LIDAR engelleri varsa kaçabilir)
+                    self.camera_lost = True
+                    self.mission.process_step(all_detections, self.costmap)
                     
-                    # Boş bir hata ekranı oluşturup logluyoruz
                     err_frame = np.zeros((480, 640, 3), dtype=np.uint8)
                     cv2.putText(err_frame, "KAMERA BAGLANTISI KOPUK / HATA", (80, 240), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                     self.logger_manager.log_frame(err_frame)
                             
-                # 24 FPS kararlılığı için bekleme süresini ayarla
                 elapsed = time.time() - loop_start
                 sleep_time = frame_time - elapsed
                 if sleep_time > 0:
@@ -683,8 +803,9 @@ class IDANode:
             logger.info("Kullanıcı tarafından durduruldu.")
         finally:
             self.stop()
-            if cap.isOpened():
-                cap.release()
+            for cap in self.caps:
+                if cap.isOpened():
+                    cap.release()
             cv2.destroyAllWindows()
 
     def _create_test_frame(self):
@@ -703,21 +824,29 @@ class IDANode:
         logger.info("Sistem kapatılıyor, güvenli moda geçiliyor...")
         self.running = False
         
-        # Grabber thread'ini durdur
-        if hasattr(self, "grabber") and self.grabber is not None:
-            self.grabber.stop()
+        # Grabber thread'lerini durdur
+        for idx, (grabber, _) in enumerate(self.grabbers):
+            grabber.stop()
             try:
-                self.grabber.join(timeout=1.0)
+                grabber.join(timeout=1.0)
             except Exception as e:
-                logger.error(f"Grabber thread join hatası: {e}")
+                logger.error(f"Grabber {idx} thread join hatası: {e}")
                 
-        # YOLO worker thread'ini durdur (Görev 3)
-        if hasattr(self, "yolo_worker") and self.yolo_worker is not None:
-            self.yolo_worker.stop()
+        # YOLO worker thread'lerini durdur
+        for idx, worker in enumerate(self.yolo_workers):
+            worker.stop()
             try:
-                self.yolo_worker.join(timeout=1.0)
+                worker.join(timeout=1.0)
             except Exception as e:
-                logger.error(f"YOLO worker thread join hatası: {e}")
+                logger.error(f"YOLO worker {idx} thread join hatası: {e}")
+                
+        # LIDAR worker thread'ini durdur
+        if self.lidar_worker:
+            self.lidar_worker.stop()
+            try:
+                self.lidar_worker.join(timeout=1.0)
+            except Exception as e:
+                logger.error(f"LIDAR worker thread join hatası: {e}")
         
         # Logları kapat
         self.logger_manager.stop()

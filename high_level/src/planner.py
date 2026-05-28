@@ -1,22 +1,37 @@
 import math
 import logging
+from .astar import AStarPlanner
 
 logger = logging.getLogger("IDA_Planner")
 logger.setLevel(logging.INFO)
 
 def gps_to_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> tuple:
     """
-    WGS-84 referans elipsoidi kullanarak iki GPS koordinatı arasındaki mesafeyi metre cinsinden hesaplar.
-    dx: Doğu (East) yönünde mesafe (m)
-    dy: Kuzey (North) yönünde mesafe (m)
+    WGS-84 referans elipsoidi kullanılarak iki GPS koordinatı arasındaki mesafeyi (Haversine Formülü) 
+    ve yönelimini (Bearing) hesaplayıp, x (Doğu) ve y (Kuzey) eksenlerindeki ayrıma (dx, dy) dönüştürür.
+    Bu yöntem uzun mesafelerde ve karmaşık hesaplamalarda düz dünya (Equirectangular) yaklaşımından çok daha kesindir.
     """
-    lat_avg = math.radians((lat1 + lat2) / 2.0)
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
+    R = 6378137.0 # Dünya yarıçapı (metre)
     
-    R = 6378137.0
-    dy = dlat * R
-    dx = dlon * R * math.cos(lat_avg)
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+
+    # Haversine Formülü ile Kesin Mesafe (Great-circle distance)
+    a = math.sin(dphi / 2.0)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0)**2
+    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    dist = R * c
+
+    # Yönelim (Forward Bearing)
+    y = math.sin(dlambda) * math.cos(phi2)
+    x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlambda)
+    bearing = math.atan2(y, x)
+
+    # dx (Doğu yönü mesafe), dy (Kuzey yönü mesafe)
+    dx = dist * math.sin(bearing)
+    dy = dist * math.cos(bearing)
+    
     return dx, dy
 
 class APFPlanner:
@@ -51,6 +66,9 @@ class APFPlanner:
         self.gps_history_lat = []
         self.gps_history_lon = []
         self.gps_filter_size = 5
+
+        # --- A* Global Planlayıcı (Görev 2) ---
+        self.astar = AStarPlanner(resolution=0.25)
 
     def plan(self, current_lat: float, current_lon: float, current_yaw_deg: float, current_speed: float,
              waypoints: list, current_wp_idx: int, costmap, prev_wp_gps: list = None, dt: float = 0.04) -> tuple:
@@ -98,6 +116,24 @@ class APFPlanner:
         
         wp_row = costmap.center_idx - int(x_body_raw / costmap.resolution) if hasattr(costmap, "center_idx") else -1
         wp_col = costmap.center_idx + int(y_body_raw / costmap.resolution) if hasattr(costmap, "center_idx") else -1
+        
+        # --- A* Global Path Planning (Görev 2) ---
+        if hasattr(costmap, "grid_obstacles") and 0 <= wp_row < costmap.grid_size and 0 <= wp_col < costmap.grid_size:
+            # A* ile geçici bir havuç (carrot) hedefi belirle
+            path = self.astar.plan((costmap.center_idx, costmap.center_idx), (wp_row, wp_col), costmap.grid_obstacles)
+            if path and len(path) > 2:
+                # Yaklaşık 2.0 metre ileriye (8 hücre) bakan bir nokta seç
+                lookahead_idx = min(len(path)-1, int(2.0 / costmap.resolution))
+                carrot_row, carrot_col = path[lookahead_idx]
+                
+                # Havuç hedefini Body-Frame koordinatlarına çevir
+                carrot_x_body = (costmap.center_idx - carrot_row) * costmap.resolution
+                carrot_y_body = (carrot_col - costmap.center_idx) * costmap.resolution
+                
+                # Hedefin (dx_m, dy_m) değerlerini havuç değerleriyle ez (Dünya koordinatlarına geri dönüştürerek)
+                # Böylece APF çekici kuvveti doğrudan engelsiz rotaya yönelecek. CTE mantığı etkilenmez.
+                dx_m = carrot_x_body * math.sin(yaw_rad) + carrot_y_body * math.cos(yaw_rad)
+                dy_m = carrot_x_body * math.cos(yaw_rad) - carrot_y_body * math.sin(yaw_rad)
         
         active_tolerance = self.waypoint_tolerance_m
         if hasattr(costmap, "grid_obstacles") and 0 <= wp_row < costmap.grid_size and 0 <= wp_col < costmap.grid_size:
@@ -183,72 +219,129 @@ class APFPlanner:
                 cte_offset_x = (u_y) * cte_correction
                 cte_offset_y = (-u_x) * cte_correction
 
-        # 3. Koordinat Dönüşümü: Doğu-Kuzey (EN) koordinatlarından Bot Gövde Koordinatlarına (Body Frame)
+        # 3. IvP-Lite: Eylem Uzayı Fayda Koordinatörü (Behavior-Based Utility Coordinator)
+        # APF kuvvetlerinin birbirini sönümlemesi ve local minima kilitlerini önler.
         yaw_rad = math.radians(current_yaw_deg)
         
-        # Çekici kuvvet yönüne enine sapma düzeltmesini ekle (Dünya koordinatlarında)
+        # Hedef koordinata göre yönelim ve mesafe (CTE düzeltmesi eklenmiş)
         total_dx = dx_m + cte_offset_x
         total_dy = dy_m + cte_offset_y
-        total_dist = math.sqrt(total_dx**2 + total_dy**2)
         
-        # Bot gövde eksenindeki ileri (x_body) ve sağ (y_body) çekici yön
-        x_body = total_dx * math.sin(yaw_rad) + total_dy * math.cos(yaw_rad)
-        y_body = total_dx * math.cos(yaw_rad) - total_dy * math.sin(yaw_rad)
+        # Hedef yönü (bearing) dünya koordinatlarında
+        target_bearing_deg = math.degrees(math.atan2(total_dx, total_dy)) % 360.0
         
-        # 4. Çekici Kuvvet (Attractive Force) Hesabı
-        if total_dist > 0.1:
-            att_x = self.K_attractive * (x_body / total_dist)
-            att_y = self.K_attractive * (y_body / total_dist)
-        else:
-            att_x, att_y = 0.0, 0.0
+        # Sağ tarafın engel durumu (sancak koruması için)
+        right_blocked = False
+        if hasattr(costmap, "is_right_blocked"):
+            right_blocked = costmap.is_right_blocked()
             
-        # 5. İtici Kuvvet (Repulsive Force) Hesabı
-        rep_x, rep_y = costmap.get_obstacle_forces()
+        # Potansiyel alan itme kuvvetlerini (corridor yanal düzeltmesi vb.) çek
+        rep_x = 0.0
+        rep_y = 0.0
+        if hasattr(costmap, "get_obstacle_forces"):
+            rep_x, rep_y = costmap.get_obstacle_forces()
+
+        # Açısal eylem adayları (tekneye göre bağıl açılar: -45° ile +45° arası, 5'er derece adımlarla)
+        steer_candidates = [float(a) for a in range(-45, 46, 5)]
+            
+        best_steer_deg = 0.0
+        max_utility = -999999.0
         
-        # 6. APF Yerel Minimum (Local Minima) Kilitlerini Çözmek İçin Sanal Teğet Kuvveti - Görev 2.1
-        rep_dist = math.sqrt(rep_x**2 + rep_y**2)
-        att_dist = math.sqrt(att_x**2 + att_y**2)
-        
-        total_force_x = att_x + rep_x
-        total_force_y = att_y + rep_y
-        total_force_mag = math.sqrt(total_force_x**2 + total_force_y**2)
-        
-        stuck = False
-        # Rota hedefinden uzakken bileşke kuvvetin sıfırlanıp kalması durumunda (Local Minima - Görev 2.1)
-        if total_force_mag < 0.15 and dist_to_wp > 1.5:
-            if att_dist > 0.1 and rep_dist > 0.1:
-                cos_theta = (att_x * rep_x + att_y * rep_y) / (att_dist * rep_dist)
-                if cos_theta < -0.90: # Zıt yönlü ve birbirini neredeyse tamamen sönümleyen kuvvetler
-                    stuck = True
+        # Ön bölgede engel yoğunluğu kontrolü (COLREGs için)
+        front_obstacle_detected = False
+        if hasattr(costmap, "grid") and hasattr(costmap, "center_idx"):
+            for dr in range(-8, 1): # İleriye doğru 2.0 metre
+                for dc in range(-2, 3): # Genişlik olarak 1.0 metre
+                    row = costmap.center_idx + dr
+                    col = costmap.center_idx + dc
+                    if 0 <= row < costmap.grid_size and 0 <= col < costmap.grid_size:
+                        if costmap.grid[row, col] > 35:
+                            front_obstacle_detected = True
+                            break
+                if front_obstacle_detected:
+                    break
+
+        for steer_deg in steer_candidates:
+            steer_rad = math.radians(steer_deg)
+            candidate_yaw_deg = (current_yaw_deg + steer_deg) % 360.0
+            
+            # --- Davranış 1: Hedefe Yönelme / Çekicilik (Waypoint Attraction) ---
+            diff_wp = target_bearing_deg - candidate_yaw_deg
+            while diff_wp > 180.0: diff_wp -= 360.0
+            while diff_wp < -180.0: diff_wp += 360.0
+            u_wp = math.cos(math.radians(diff_wp)) # [-1.0, 1.0] aralığında
+            
+            # --- Davranış 2: Engelden Kaçınma (Obstacle Avoidance / Ray-Casting) ---
+            # Aday yönde 5.5 metreye kadar ışın gönderip maliyetleri sorgula
+            max_penalty = 0.0
+            hard_collision = False
+            
+            if hasattr(costmap, "grid") and hasattr(costmap, "center_idx"):
+                # 0.5m ile 5.0m arasında 10 noktada örnekleme yap
+                for d in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]:
+                    # Tekneye göre bağıl gövde koordinatı (x_body = ileri, y_body = sağ)
+                    px = d * math.cos(steer_rad)
+                    py = d * math.sin(steer_rad)
+                    
+                    row = costmap.center_idx - int(px / costmap.resolution)
+                    col = costmap.center_idx + int(py / costmap.resolution)
+                    
+                    if 0 <= row < costmap.grid_size and 0 <= col < costmap.grid_size:
+                        cost = costmap.grid[row, col]
+                        if cost > 40:
+                            # Yakın mesafedeki (<= 2.2m) yüksek maliyetler doğrudan çarpışma kabul edilir
+                            if d <= 2.2:
+                                hard_collision = True
+                            
+                            # Yakındaki engellere daha yüksek ceza puanı ver
+                            penalty = (cost / 100.0) * (6.0 - d) / 5.0
+                            max_penalty = max(max_penalty, penalty)
+            
+            if hard_collision:
+                u_obs = -100.0  # Güvenlik ihlali: Bu yöne gidiş engellenir
             else:
-                stuck = True
-            
-        if stuck and att_dist > 0.001:
-            # Sağ tarafın kapalı olup olmadığını costmap'ten sorgula (Görev 2.3 ile entegre)
-            right_blocked = False
-            if hasattr(costmap, "is_right_blocked"):
-                right_blocked = costmap.is_right_blocked()
-            
-            # Sanal teğet kuvveti büyüklüğü
-            pert_mag = 1.8
-            if not right_blocked:
-                # Sağa doğru teğetsel kuvvet (+y_body yönünde döndürür)
-                pert_x = -att_y * (pert_mag / att_dist)
-                pert_y = att_x * (pert_mag / att_dist)
-            else:
-                # Sola doğru teğetsel kuvvet (-y_body yönünde döndürür)
-                pert_x = att_y * (pert_mag / att_dist)
-                pert_y = -att_x * (pert_mag / att_dist)
+                u_obs = 1.0 - min(1.0, max_penalty)
                 
-            total_force_x += pert_x
-            total_force_y += pert_y
-            logger.warning(f"APF Local Minima tespit edildi! Teğet kuvveti uygulandı: pert_x={pert_x:.2f}, pert_y={pert_y:.2f} (Sağ engelli={right_blocked})")
+            # --- Davranış 3: Rota Pürüzsüzlüğü (Smoothness) ---
+            if self.last_target_heading is not None:
+                diff_smooth = candidate_yaw_deg - self.last_target_heading
+                while diff_smooth > 180.0: diff_smooth -= 360.0
+                while diff_smooth < -180.0: diff_smooth += 360.0
+                u_smooth = math.cos(math.radians(diff_smooth))
+            else:
+                u_smooth = 1.0
+                
+            # --- Davranış 4: COLREGs Sağa Kaçış Tercihi (Sancak Geçişi) ---
+            u_colregs = 0.0
+            if front_obstacle_detected and not right_blocked:
+                # Sancak yönüne (steer_deg > 0) dönüşe hafif bir avantaj sağla, iskeleye dönüşü cezalandır
+                if steer_deg > 0.0:
+                    u_colregs = 0.20 * math.sin(steer_rad)
+                elif steer_deg < 0.0:
+                    u_colregs = -0.20 * abs(math.sin(steer_rad))
+                    
+            # --- Davranış 5: Potansiyel Alan Kuvvet Alanı Uyumu (Force Field Alignment) ---
+            # costmap.get_obstacle_forces() tarafından sağlanan koridor yanal düzeltmesi,
+            # COLREGs bükümü vb. kuvvetleri eylem uzayına aktarır.
+            u_force = 0.0
+            rep_mag = math.sqrt(rep_x**2 + rep_y**2)
+            if rep_mag > 0.001:
+                # İtici kuvvetin büyüklüğünü [-2.5, 2.5] ile ölçeklendirerek etkiyi dengede tut
+                scale = min(2.5, rep_mag) / rep_mag
+                u_force = (rep_x * scale) * math.cos(steer_rad) + (rep_y * scale) * math.sin(steer_rad)
+                
+            # Ağırlıklandırılmış toplam fayda değeri
+            # Engel önleme ağırlığı (4.0), hedef takibi ağırlığı (2.0) ve kuvvet alanı uyumu (1.0) dengelenmiştir
+            utility = 2.0 * u_wp + 4.0 * u_obs + 0.5 * u_smooth + u_colregs + 1.0 * u_force
+            
+            if utility > max_utility:
+                max_utility = utility
+                best_steer_deg = steer_deg
+
+        # Hedef yönelimi belirle
+        target_heading_deg = (current_yaw_deg + best_steer_deg) % 360.0
         
-        # 7. Kontrol Komutları Üretimi
-        steer_angle_rad = math.atan2(total_force_y, total_force_x)
-        target_heading_deg = (current_yaw_deg + math.degrees(steer_angle_rad)) % 360.0
-        
-        # Rota Yön Yumuşatma Filtresi (EMA) - Görev 2.2
+        # Yönelim filtresini güncelle (EMA)
         if self.last_target_heading is None:
             self.last_target_heading = target_heading_deg
         else:
@@ -257,30 +350,40 @@ class APFPlanner:
             while diff < -180.0: diff += 360.0
             self.last_target_heading = (self.last_target_heading + self.heading_ema_alpha * diff) % 360.0
             target_heading_deg = self.last_target_heading
-            
-        # Hız kontrolü:
-        angle_factor = math.cos(steer_angle_rad)
+
+        # Hız Planlaması (Keskin dönüşlerde savrulmayı ve akıntı etkisini önlemek için)
+        best_steer_rad = math.radians(best_steer_deg)
+        angle_factor = math.cos(best_steer_rad)
         
-        # Geri Vites (Reverse Thrust) Planlama Desteği - Görev 2.4
-        # Eğer önümüzde engel varsa ve bizi geriye itiyorsa (rep_x < -0.5) geri git
-        if rep_x < -0.5:
-            # Geri Vites: APF kuvvetini hız birimine dönüştür (kuvvet → m/s)
-            reverse_speed = max(-self.nominal_speed_ms, -self.nominal_speed_ms * min(1.0, abs(rep_x) / 3.0))
-            target_speed = max(-self.nominal_speed_ms, min(reverse_speed, self.max_speed_ms))
+        # Geri Vites (Reverse) Kararı:
+        # Eğer önümüzde (0 derece ışınında) çok yakın ve büyük bir engel varsa geriye itki uygula
+        front_cost = 0
+        if hasattr(costmap, "grid") and hasattr(costmap, "center_idx"):
+            for d in [1.0, 1.5]:
+                row = costmap.center_idx - int(d / costmap.resolution)
+                col = costmap.center_idx
+                if 0 <= row < costmap.grid_size and 0 <= col < costmap.grid_size:
+                    front_cost = max(front_cost, costmap.grid[row, col])
+                    
+        if front_cost > 55:
+            # Geri git (nominal hızın negatif bir yüzdesi)
+            target_speed = -0.6 * self.nominal_speed_ms
         else:
             if angle_factor < 0:
-                # Keskin dönüşlerde akıntı sürüklenmesini engellemek için steerage way'i koruyacak şekilde 
-                # asgari hızı biraz daha yüksek tutuyoruz (Görev 9)
-                target_speed = max(self.min_speed_ms, 0.65) 
+                # Keskin dönüşlerde tekneyi steerage-way limitinde yavaşlat (min hızı koru)
+                target_speed = max(self.min_speed_ms, 0.65)
             else:
                 target_speed = self.nominal_speed_ms * (angle_factor ** 2)
                 if dist_to_wp < 5.0:
+                    # Hedefe yaklaşırken yavaşlama rampası
                     target_speed = min(target_speed, 0.5 + 0.2 * dist_to_wp)
                     
+            # Nominal limitler arasına sıkıştır
             target_speed = max(self.min_speed_ms, min(target_speed, self.max_speed_ms))
             
-            # Eğer rotada hiç engel yoksa ve hedefe gidiyorsak tam hıza çıkabiliriz
-            if abs(rep_x) < 0.1 and abs(rep_y) < 0.1 and dist_to_wp > 8.0:
+            # Eğer rotada hiç engel yoksa ve hedef uzaksa tam hıza çık
+            if not front_obstacle_detected and dist_to_wp > 8.0:
                 target_speed = self.nominal_speed_ms * max(self.min_speed_ms / self.nominal_speed_ms, angle_factor)
-                
+                target_speed = max(self.min_speed_ms, min(target_speed, self.max_speed_ms))
+
         return target_speed, target_heading_deg, current_wp_idx, False

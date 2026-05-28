@@ -27,10 +27,10 @@ def run_compatibility_test():
     print(f"-> Komut Payload Uzunluğu: {len(payload_cmd)} bayt [OK]")
     
     packet_cmd = IDAPacket(MSG_PHONE_COMMANDS, payload_cmd).pack()
-    assert len(packet_cmd) == 16, f"Hata: Toplam komut paket uzunluğu {len(packet_cmd)} (Beklenen: 16)"
+    assert len(packet_cmd) == 17, f"Hata: Toplam komut paket uzunluğu {len(packet_cmd)} (Beklenen: 17)"
     print(f"-> Toplam Komut Paket Uzunluğu: {len(packet_cmd)} bayt [OK]")
     
-    # 2. STM32 Telemetri Paketi Çözme Testi (54 bytes Payload, 60 bytes Paket)
+    # 2. STM32 Telemetri Paketi Çözme Testi (68 bytes Payload, 74 bytes Paket)
     print("\n[TEST 2] STM32 Telemetri Paket Çözme Test Ediliyor...")
     
     # Simüle edilmiş STM32'den gelen telemetri verisi
@@ -47,25 +47,35 @@ def run_compatibility_test():
     yaw_rate = 1.2
     battery = 11.8
     mode = 1 # MODE_AUTO
+    left_pwm = 1600
+    right_pwm = 1400
+    selected_color_id = 2
+    leak_detected = 0
+    battery_current = 4.5
+    front_ultrasonic_m = 1.2
     
-    # Paket formatı: <ddffBfffffffB
-    # d: double (8), d: double (8), f: float (4), f: float (4), B: uint8 (1)
-    # f: float (4), f: float (4), f: float (4), f: float (4), f: float (4), f: float (4), f: float (4), B: uint8 (1)
-    payload_telem = struct.pack("<ddffBfffffffB", lat, lon, sog, cog, gps_lock, 
-                                roll, pitch, yaw, roll_rate, pitch_rate, yaw_rate, battery, mode)
+    # Paket formatı: <ddffBfffffffBHHBBff
+    payload_telem = struct.pack("<ddffBfffffffBHHBBff", lat, lon, sog, cog, gps_lock, 
+                                roll, pitch, yaw, roll_rate, pitch_rate, yaw_rate, battery, mode,
+                                left_pwm, right_pwm, selected_color_id, leak_detected, battery_current, front_ultrasonic_m)
     
-    assert len(payload_telem) == 54, f"Hata: Telemetri payload uzunluğu {len(payload_telem)} (Beklenen: 54)"
+    assert len(payload_telem) == 68, f"Hata: Telemetri payload uzunluğu {len(payload_telem)} (Beklenen: 68)"
     print(f"-> Telemetri Payload Uzunluğu: {len(payload_telem)} bayt [OK]")
     
     # C tarafında oluşturulan paketin zarfını (envelope) taklit edelim
-    # SYNC_BYTE_1, SYNC_BYTE_2, MSG_STM32_TELEMETRY, Length, Payload, CRC16_LSB, CRC16_MSB
-    header = struct.pack("<BBBB", SYNC_BYTE_1, SYNC_BYTE_2, MSG_STM32_TELEMETRY, len(payload_telem))
+    # SYNC_BYTE_1, SYNC_BYTE_2, MSG_STM32_TELEMETRY, Version, Length, Payload, CRC16_LSB, CRC16_MSB
+    # NOT: protocol.py içinde paketin yapısı: Sync1, Sync2, Version, MsgID, Length, Payload, CRC16
+    # Dolayısıyla header boyutu: 1 (Sync1) + 1 (Sync2) + 1 (Version) + 1 (MsgID) + 1 (Length) = 5 bayt!
+    # protocol.py line 48: header = struct.pack("<BBBBB", SYNC_BYTE_1, SYNC_BYTE_2, PROTOCOL_VERSION, self.msg_id, self.length)
+    # let's write it down exactly as protocol.py packs it:
+    from high_level.src.protocol import PROTOCOL_VERSION
+    header = struct.pack("<BBBBB", SYNC_BYTE_1, SYNC_BYTE_2, PROTOCOL_VERSION, MSG_STM32_TELEMETRY, len(payload_telem))
     packet_without_crc = header + payload_telem
     crc = calculate_crc16(packet_without_crc)
     crc_bytes = struct.pack("<H", crc)
     full_packet_telem = packet_without_crc + crc_bytes
     
-    assert len(full_packet_telem) == 60, f"Hata: Toplam telemetri paket uzunluğu {len(full_packet_telem)} (Beklenen: 60)"
+    assert len(full_packet_telem) == 75, f"Hata: Toplam telemetri paket uzunluğu {len(full_packet_telem)} (Beklenen: 75)"
     print(f"-> Toplam Telemetri Paket Uzunluğu: {len(full_packet_telem)} bayt [OK]")
     
     # Python tarafındaki çözücüyü test et
@@ -79,6 +89,12 @@ def run_compatibility_test():
     assert abs(unpacked["yaw"] - yaw) < 1e-4, "Hata: Yaw uyuşmazlığı"
     assert abs(unpacked["battery"] - battery) < 1e-4, "Hata: Battery voltage uyuşmazlığı"
     assert unpacked["mode"] == mode, "Hata: Mode uyuşmazlığı"
+    assert unpacked["left_pwm"] == left_pwm, "Hata: Left PWM uyuşmazlığı"
+    assert unpacked["right_pwm"] == right_pwm, "Hata: Right PWM uyuşmazlığı"
+    assert unpacked["selected_color_id"] == selected_color_id, "Hata: Selected color ID uyuşmazlığı"
+    assert unpacked["leak_detected"] == leak_detected, "Hata: Leak detected uyuşmazlığı"
+    assert abs(unpacked["battery_current"] - battery_current) < 1e-4, "Hata: Battery current uyuşmazlığı"
+    assert abs(unpacked["front_ultrasonic_m"] - front_ultrasonic_m) < 1e-4, "Hata: Front distance uyuşmazlığı"
     
     print("-> Tüm çözülen veriler STM32 yapısal hizalaması ile %100 UYUMLU! [OK]")
     
@@ -87,8 +103,6 @@ def run_compatibility_test():
     test_data = b"aydede_stm32_test_payload"
     python_crc = calculate_crc16(test_data)
     
-    # C kodundaki static inline uint16_t calculate_crc16 ile aynı veri kümesini elle test edelim:
-    # CRC16 Modbus (0x8005 ters çevrilmiş: 0xA001), başlangıç 0xFFFF
     print(f"-> Test Verisi: {test_data}")
     print(f"-> Hesaplanan CRC: 0x{python_crc:04X} [OK]")
     

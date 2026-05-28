@@ -25,6 +25,11 @@
     "auto_start_seconds": -1.0,
     "gcs_udp_port": 12345,
     "gcs_serial_port": null,
+    "video_sources": [0, 1],
+    "camera_bearing_offsets_deg": [-60.0, 60.0],
+    "lidar_enabled": true,
+    "lidar_port": "/dev/ttyUSB0",
+    "lidar_yaw_offset": 0.0,
     "yolo_classes": {
         "0": "orange_gate",
         "1": "yellow_obstacle",

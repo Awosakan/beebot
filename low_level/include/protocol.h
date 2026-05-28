@@ -42,7 +42,7 @@ typedef struct {
     float target_heading;  // degrees (0-360)
 } PhoneCommands_t;
 
-// STM32 Telemetry Struct (58 bytes)
+// STM32 Telemetry Struct (68 bytes)
 typedef struct {
     double lat;
     double lon;
@@ -59,6 +59,10 @@ typedef struct {
     uint8_t mode;
     uint16_t left_pwm;
     uint16_t right_pwm;
+    uint8_t selected_color_id;
+    uint8_t leak_detected;      // 0 = Normal, 1 = Leak Detected!
+    float battery_current;      // Amps
+    float front_ultrasonic_m;   // Distance in meters
 } Telemetry_t;
 
 // PID Tuning Struct (12 bytes)
@@ -74,7 +78,7 @@ typedef struct {
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 _Static_assert(sizeof(Heartbeat_t) == 2, "Heartbeat_t size must be exactly 2 bytes");
 _Static_assert(sizeof(PhoneCommands_t) == 10, "PhoneCommands_t size must be exactly 10 bytes");
-_Static_assert(sizeof(Telemetry_t) == 58, "Telemetry_t size must be exactly 58 bytes");
+_Static_assert(sizeof(Telemetry_t) == 68, "Telemetry_t size must be exactly 68 bytes");
 _Static_assert(sizeof(PIDTuning_t) == 12, "PIDTuning_t size must be exactly 12 bytes");
 #endif
 

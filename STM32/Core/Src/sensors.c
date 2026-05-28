@@ -31,7 +31,15 @@ static void sensors_delay(uint32_t ms) {
 
 // Complementary Filtre Katsayıları
 #define COMP_FILTER_ALPHA 0.98f   // Roll/Pitch için jiroskop ağırlığı
-#define GPS_COG_ALIGN_BETA 0.995f  // Hareket halindeyken yaw'ı GPS COG'a kaydıran katsayı
+
+// EKF (1D Kalman Filtresi) Değişkenleri - Yaw ve Gyro Bias Tahmini
+static float ekf_yaw = 0.0f;
+static float ekf_gyro_bias = 0.0f;
+static float P00 = 1.0f, P01 = 0.0f, P10 = 0.0f, P11 = 1.0f;
+
+#define Q_ANGLE 0.001f    // Süreç gürültüsü (Açı)
+#define Q_BIAS  0.003f    // Süreç gürültüsü (Bias)
+#define R_MEAS  10.0f     // Ölçüm gürültüsü (GPS COG varyansı)
 
 // ADC Batarya Gerilim Bölücü Oranı (Örn: 10K / 1K direnç bölücü -> (10+1)/1 = 11)
 #define VOLTAGE_DIVIDER_RATIO 11.0f
@@ -79,6 +87,10 @@ uint8_t sensors_imu_init(I2C_HandleTypeDef *hi2c) {
     imu_data.roll_rate = 0.0f;
     imu_data.pitch_rate = 0.0f;
     imu_data.yaw_rate = 0.0f;
+    
+    ekf_yaw = 0.0f;
+    ekf_gyro_bias = 0.0f;
+    P00 = 1.0f; P01 = 0.0f; P10 = 0.0f; P11 = 1.0f;
     
     return 1; // Başarılı
 }
@@ -192,33 +204,54 @@ void sensors_imu_update(I2C_HandleTypeDef *hi2c, float dt) {
     imu_data.roll = COMP_FILTER_ALPHA * (imu_data.roll + imu_data.roll_rate * dt) + (1.0f - COMP_FILTER_ALPHA) * roll_acc;
     imu_data.pitch = COMP_FILTER_ALPHA * (imu_data.pitch + imu_data.pitch_rate * dt) + (1.0f - COMP_FILTER_ALPHA) * pitch_acc;
     
-    // Yaw açısını entegre et
-    imu_data.yaw += imu_data.yaw_rate * dt;
+    // --- 1. EKF Predict (Tahmin) Adımı - Görev 4 ---
+    float unbiased_rate = imu_data.yaw_rate - ekf_gyro_bias;
+    ekf_yaw += unbiased_rate * dt;
     
-    // Yaw açısını 0-360 dereceye sarmala
-    while (imu_data.yaw >= 360.0f) imu_data.yaw -= 360.0f;
-    while (imu_data.yaw < 0.0f)   imu_data.yaw += 360.0f;
+    while (ekf_yaw >= 360.0f) ekf_yaw -= 360.0f;
+    while (ekf_yaw < 0.0f)    ekf_yaw += 360.0f;
     
+    // Kovaryans Tahmini
+    float P00_pred = P00 - dt * (P10 + P01) + dt * dt * P11 + Q_ANGLE;
+    float P01_pred = P01 - dt * P11;
+    float P10_pred = P10 - dt * P11;
+    float P11_pred = P11 + Q_BIAS;
+    
+    // --- 2. EKF Update (Güncelleme) Adımı ---
     // GPS Rota Açısı (COG) Fallback:
-    // Eğer araç 0.6 m/s üzerinde hareket ediyorsa, manyetik bozunmalar veya jiroskop sapması (drift) 
-    // yerine GPS COG referans alınarak yaw açısı hizalanır (Kötü Senaryo 2 koruması).
-    // Ancak yan yan sürüklenmelerde (crab walk) ve sert dönüşlerde COG ile Heading farklılaşacağından,
-    // yanal ivme (ay) ve dönüş hızı (yaw_rate) için eşik filtresi uyguluyoruz (Görev 4.3).
-    // Ucuz GPS gürültüsünü engellemek için hız eşiği 1.2 m/s'ye yükseltildi.
+    // Eğer araç 1.2 m/s üzerinde hareket ediyorsa, GPS COG verisi ile 
+    // hem Yaw açısını düzeltiriz hem de Jiroskopun kayma miktarını (bias) tahmin ederiz.
+    // Pusulası (Manyetometre) olmayan sistemler için en matematiksel stabil yöntemdir.
     GPS_Data_t gps_copy = sensors_get_gps();
     if (gps_copy.gps_lock && gps_copy.sog > 1.2f && fabsf(ay) < 0.12f && fabsf(imu_data.yaw_rate) < 15.0f) {
-        float cog = gps_copy.cog;
-        float diff = cog - imu_data.yaw;
-        while (diff > 180.0f)  diff -= 360.0f;
-        while (diff < -180.0f) diff += 360.0f;
+        float z = gps_copy.cog;
+        float y = z - ekf_yaw; // Innovation
         
-        // Yavaşça COG değerine çek (Yön ani sıçramasın)
-        imu_data.yaw += (1.0f - GPS_COG_ALIGN_BETA) * diff;
+        while (y > 180.0f)  y -= 360.0f;
+        while (y < -180.0f) y += 360.0f;
         
-        // Tekrar sarmalama
-        while (imu_data.yaw >= 360.0f) imu_data.yaw -= 360.0f;
-        while (imu_data.yaw < 0.0f)   imu_data.yaw += 360.0f;
+        float S = P00_pred + R_MEAS;
+        float K0 = P00_pred / S;
+        float K1 = P10_pred / S;
+        
+        ekf_yaw += K0 * y;
+        ekf_gyro_bias += K1 * y;
+        
+        while (ekf_yaw >= 360.0f) ekf_yaw -= 360.0f;
+        while (ekf_yaw < 0.0f)    ekf_yaw += 360.0f;
+        
+        P00 = P00_pred - K0 * P00_pred;
+        P01 = P01_pred - K0 * P01_pred;
+        P10 = P10_pred - K1 * P00_pred;
+        P11 = P11_pred - K1 * P01_pred;
+    } else {
+        P00 = P00_pred;
+        P01 = P01_pred;
+        P10 = P10_pred;
+        P11 = P11_pred;
     }
+    
+    imu_data.yaw = ekf_yaw;
 }
 
 void sensors_gps_init(void) {
@@ -376,10 +409,15 @@ static void parse_nmea_sentence(const char *sentence) {
                 float dt = (float)(now_ms - prev_update) / 1000.0f;
                 if (dt <= 0.0f) dt = 0.1f; // Bölme hatasını önle
                 
-                // İki konum arasındaki mesafeyi metre cinsinden hesapla (Flat Earth)
-                double dx = (parsed_lon - prev_lon) * 111320.0 * cos(prev_lat * M_PI / 180.0);
-                double dy = (parsed_lat - prev_lat) * 110574.0;
-                float distance = (float)sqrt(dx*dx + dy*dy);
+                // İki konum arasındaki mesafeyi Haversine ile hesapla (Matematiksel Kesinlik - Görev 1)
+                double phi1 = prev_lat * M_PI / 180.0;
+                double phi2 = parsed_lat * M_PI / 180.0;
+                double dphi = (parsed_lat - prev_lat) * M_PI / 180.0;
+                double dlambda = (parsed_lon - prev_lon) * M_PI / 180.0;
+                
+                double a = sin(dphi/2.0) * sin(dphi/2.0) + cos(phi1) * cos(phi2) * sin(dlambda/2.0) * sin(dlambda/2.0);
+                double c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+                float distance = (float)(6378137.0 * c);
                 float calculated_speed = distance / dt;
                 
                 // Eğer son veri alımından bu yana 5 saniyeden fazla zaman geçtiyse GPS kesilmiş olabilir,
@@ -451,6 +489,12 @@ void sensors_gps_update_tick(uint32_t current_time_ms) {
 }
 
 float sensors_battery_read(ADC_HandleTypeDef *hadc) {
+    ADC_ChannelConfTypeDef sConfig = {0};
+    sConfig.Channel = ADC_CHANNEL_1; // PA1
+    sConfig.Rank = 1;
+    sConfig.SamplingTime = ADC_SAMPLETIME_56CYCLES;
+    HAL_ADC_ConfigChannel(hadc, &sConfig);
+
     HAL_ADC_Start(hadc);
     if (HAL_ADC_PollForConversion(hadc, 10) == HAL_OK) {
         uint32_t raw_val = HAL_ADC_GetValue(hadc);
@@ -461,6 +505,57 @@ float sensors_battery_read(ADC_HandleTypeDef *hadc) {
     HAL_ADC_Stop(hadc);
     
     return battery_voltage;
+}
+
+float sensors_read_ultrasonic(GPIO_TypeDef* TrigPort, uint16_t TrigPin, GPIO_TypeDef* EchoPort, uint16_t EchoPin) {
+    // 1. Trigger pinini resetle
+    HAL_GPIO_WritePin(TrigPort, TrigPin, GPIO_PIN_RESET);
+    
+    // 2. 10us HIGH pulse gönder (STM32F4'te 168MHz'de kabaca 1680 çevrim)
+    HAL_GPIO_WritePin(TrigPort, TrigPin, GPIO_PIN_SET);
+    for (volatile uint32_t i = 0; i < 2000; i++);
+    HAL_GPIO_WritePin(TrigPort, TrigPin, GPIO_PIN_RESET);
+    
+    // 3. Echo pininin HIGH olmasını bekle (Maks 5ms)
+    uint32_t timeout = 50000;
+    while (HAL_GPIO_ReadPin(EchoPort, EchoPin) == GPIO_PIN_RESET && timeout > 0) {
+        timeout--;
+    }
+    if (timeout == 0) return -1.0f;
+    
+    // 4. Echo pini HIGH olduğu süreyi ölç (Maks 15ms)
+    uint32_t echo_ticks = 0;
+    timeout = 150000;
+    while (HAL_GPIO_ReadPin(EchoPort, EchoPin) == GPIO_PIN_SET && timeout > 0) {
+        echo_ticks++;
+        timeout--;
+    }
+    if (timeout == 0) return -1.0f;
+    
+    // Ticks değerini metreye dönüştür (0.00018f deneysel katsayı)
+    float distance_m = (float)echo_ticks * 0.00018f;
+    if (distance_m < 0.2f || distance_m > 4.5f) {
+        return -1.0f; // Hatalı mesafe limitleri
+    }
+    return distance_m;
+}
+
+float sensors_current_read(ADC_HandleTypeDef *hadc) {
+    ADC_ChannelConfTypeDef sConfig = {0};
+    sConfig.Channel = ADC_CHANNEL_0; // PA0
+    sConfig.Rank = 1;
+    sConfig.SamplingTime = ADC_SAMPLETIME_56CYCLES;
+    HAL_ADC_ConfigChannel(hadc, &sConfig);
+
+    float current_a = 0.0f;
+    HAL_ADC_Start(hadc);
+    if (HAL_ADC_PollForConversion(hadc, 10) == HAL_OK) {
+        uint32_t raw_val = HAL_ADC_GetValue(hadc);
+        float pin_voltage = ((float)raw_val / 4095.0f) * ADC_REF_VOLTAGE;
+        current_a = pin_voltage * 18.0f; // Uni-directional PM ölçeklemesi
+    }
+    HAL_ADC_Stop(hadc);
+    return current_a;
 }
 
 GPS_Data_t sensors_get_gps(void) {

@@ -41,8 +41,9 @@ void control_set_motor_scaling(float left_scale, float right_scale);
 // Yönelim Sabitleme ve Diferansiyel İtki Hesaplama Döngüsü
 // current_yaw: Anlık pusula açısı (0-360 derece)
 // target_yaw: Telefondan gelen hedef rota açısı (0-360 derece)
-// target_speed: Telefondan gelen hedef ileri hız komutu (0.0 ile 1.0 arası güç yüzdesi)
-MotorOutput_t control_update(float current_yaw, float target_yaw, float target_speed, float dt);
+// current_speed_ms: GPS SOG verisinden gelen anlık yer hızı (m/s)
+// target_speed_norm: Telefondan gelen hedef ileri hız komutu (-1.0 ile 1.0 arası güç/norm yüzdesi)
+MotorOutput_t control_update(float current_yaw, float target_yaw, float current_speed_ms, float target_speed_norm, float dt);
 
 #ifdef __cplusplus
 }

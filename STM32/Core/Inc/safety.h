@@ -24,6 +24,7 @@ typedef struct {
     uint32_t stall_timer;         // Motor kilitlenme (stuck) sayacı (ms)
     float last_yaw_for_stall;     // Stall kontrolü için kaydedilen son yaw açısı
     uint8_t emergency_triggered;  // PC13 EXTI fiziksel kesme bayrağı
+    uint8_t leak_detected;        // Sızıntı sensörü durumu (0=Normal, 1=Sızıntı)
 } SafetyStatus_t;
 
 // Görev Watchdog Tanımları (Görev 25 & 143)

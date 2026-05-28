@@ -174,18 +174,20 @@ def unpack_phone_commands(payload: bytes) -> tuple:
 def pack_stm32_telemetry(lat: float, lon: float, sog: float, cog: float, gps_lock: int,
                          roll: float, pitch: float, yaw: float, roll_rate: float, 
                          pitch_rate: float, yaw_rate: float, battery: float, mode: int,
-                         left_pwm: int, right_pwm: int) -> bytes:
+                         left_pwm: int, right_pwm: int, selected_color_id: int,
+                         leak_detected: int, battery_current: float, front_ultrasonic_m: float) -> bytes:
     """
     STM32'den telefona gönderilen kritik sensör verileri.
     """
-    return struct.pack("<ddffBfffffffBHH", lat, lon, sog, cog, gps_lock, 
+    return struct.pack("<ddffBfffffffBHHBBff", lat, lon, sog, cog, gps_lock, 
                        roll, pitch, yaw, roll_rate, pitch_rate, yaw_rate, battery, mode,
-                       left_pwm, right_pwm)
+                       left_pwm, right_pwm, selected_color_id,
+                       leak_detected, battery_current, front_ultrasonic_m)
 
 def unpack_stm32_telemetry(payload: bytes) -> dict:
-    if len(payload) != 58:  # 8+8+4+4+1+4+4+4+4+4+4+4+1+2+2 = 58 bytes
-        raise ValueError(f"Invalid telemetry size: {len(payload)} (expected 58)")
-    data = struct.unpack("<ddffBfffffffBHH", payload)
+    if len(payload) != 68:  # 8+8+4+4+1+4+4+4+4+4+4+4+1+2+2+1+1+4+4 = 68 bytes
+        raise ValueError(f"Invalid telemetry size: {len(payload)} (expected 68)")
+    data = struct.unpack("<ddffBfffffffBHHBBff", payload)
     return {
         "lat": data[0],
         "lon": data[1],
@@ -201,7 +203,11 @@ def unpack_stm32_telemetry(payload: bytes) -> dict:
         "battery": data[11],
         "mode": data[12],
         "left_pwm": data[13],
-        "right_pwm": data[14]
+        "right_pwm": data[14],
+        "selected_color_id": data[15],
+        "leak_detected": data[16],
+        "battery_current": data[17],
+        "front_ultrasonic_m": data[18]
     }
 
 def pack_pid_tuning(kp: float, ki: float, kd: float) -> bytes:

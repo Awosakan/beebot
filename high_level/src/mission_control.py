@@ -3,7 +3,7 @@ import math
 import logging
 import threading
 from .protocol import (
-    MODE_IDLE, MODE_AUTO, MODE_FAILSAFE, MODE_EMERGENCY,
+    MODE_IDLE, MODE_AUTO, MODE_MANUAL, MODE_FAILSAFE, MODE_EMERGENCY,
     pack_phone_commands, pack_heartbeat, MSG_HEARTBEAT
 )
 from .planner import APFPlanner, gps_to_meters
@@ -90,6 +90,16 @@ class MissionController:
         self.last_sent_speed = 0.0
         self.last_sent_heading = None
         
+        # Dead Reckoning (Konum Kestirimi) Değişkenleri
+        self.dr_active = False
+        self.dr_start_time = None
+        self.last_dr_time = None
+        self.dr_lat = None
+        self.dr_lon = None
+        self.estimated_speed = 0.0
+        self.loiter_lat = None
+        self.loiter_lon = None
+        
         # Ego-motion takibi için önceki konum verileri (Görev 2.6)
         self.last_ego_lat = None
         self.last_ego_lon = None
@@ -110,6 +120,7 @@ class MissionController:
 
         # Kamikaze son bilinen hedef konumu (B2 düzeltmesi)
         self.last_target_gps = None
+        self.last_stm32_mode = MODE_IDLE
 
     def update_telemetry(self, telemetry: dict):
         with self.telemetry_lock:
@@ -124,6 +135,22 @@ class MissionController:
             self.stm32_mode = telemetry.get("mode", MODE_IDLE)
             self.current_left_pwm = telemetry.get("left_pwm", 1500)
             self.current_right_pwm = telemetry.get("right_pwm", 1500)
+            
+            # Kumandadan seçilen renk bilgisini oku ve güncelle
+            telemetry_color_id = telemetry.get("selected_color_id", 0)
+            color_map = {
+                1: "target_red",
+                2: "target_green",
+                3: "target_blue",
+                4: "yellow_obstacle"
+            }
+            if telemetry_color_id in color_map:
+                new_color = color_map[telemetry_color_id]
+                if self.target_color != new_color:
+                    logger.info(f"Otopilottan yeni hedef renk seçimi alındı: {new_color} (Eski: {self.target_color})")
+                    self.target_color = new_color
+                    self.config["target_color"] = new_color
+            
             self.last_telemetry_time = time.time()
             self.telemetry_received = True
 
@@ -177,6 +204,75 @@ class MissionController:
             last_telemetry_time = self.last_telemetry_time
             stm32_mode = self.stm32_mode
             
+        # --- Dead Reckoning (Konum Kestirimi) Filtresi ---
+        if gps_lock == 0:
+            if not self.dr_active:
+                self.dr_active = True
+                self.dr_start_time = now
+                self.last_dr_time = now
+                self.dr_lat = curr_lat
+                self.dr_lon = curr_lon
+                self.estimated_speed = curr_speed if curr_speed > 0.1 else self.config.get("nominal_speed_ms", 1.3)
+                logger.warning("Dead Reckoning BASLATILDI: GPS kilidi koptu, konum kestirimi üzerinden seyrüsefer yapılıyor.")
+            else:
+                dr_dt = now - self.last_dr_time
+                self.last_dr_time = now
+                
+                # Atalet modeliyle hız tahmini (hız komutunu takip eden birinci derece gecikme filtresi)
+                self.estimated_speed = 0.90 * self.estimated_speed + 0.10 * self.last_sent_speed
+                
+                # Konum entegrasyonu (m)
+                ds = self.estimated_speed * dr_dt
+                dx = ds * math.sin(math.radians(curr_yaw))
+                dy = ds * math.cos(math.radians(curr_yaw))
+                
+                # Metreyi GPS derecesine çevirme (WGS84 Yaklaşımı)
+                R = 6378137.0
+                self.dr_lat += math.degrees(dy / R)
+                self.dr_lon += math.degrees(dx / (R * math.cos(math.radians(self.dr_lat))))
+                
+            # Konum verilerini Dead Reckoning çıktılarıyla ez
+            curr_lat = self.dr_lat
+            curr_lon = self.dr_lon
+            curr_speed = self.estimated_speed
+            
+            # Throttled (3 saniyede bir) log basarak kullanıcıyı bilgilendir
+            if not hasattr(self, '_last_dr_log_time') or (now - self._last_dr_log_time > 3.0):
+                self._last_dr_log_time = now
+                logger.warning(
+                    f"[DR_ACTIVE] GPS yok! Entegre Konum: {curr_lat:.6f}, {curr_lon:.6f} | "
+                    f"Tahmini Hız: {curr_speed:.2f} m/s | Süre: {now - self.dr_start_time:.1f}s"
+                )
+        else:
+            # GPS kilidi var ise DR filtre durumunu sıfırla/senkronize et
+            if self.dr_active:
+                logger.info(f"Dead Reckoning DEAKTIFE EDILDI: GPS kilidi tekrar sağlandı. Konum senkronize edildi.")
+                self.dr_active = False
+            self.dr_lat = curr_lat
+            self.dr_lon = curr_lon
+            self.estimated_speed = curr_speed
+
+        # Mod geçiş logları
+        if stm32_mode != self.last_stm32_mode:
+            if stm32_mode == MODE_MANUAL:
+                logger.warning("Kumanda üzerinden MANUEL kontrol devralındı! Otonom seyrüsefer askıya alındı.")
+            elif self.last_stm32_mode == MODE_MANUAL and stm32_mode == MODE_AUTO:
+                logger.info("Kumanda üzerinden OTONOM kontrol geri verildi! Seyrüsefer kaldığı yerden devam ediyor.")
+            self.last_stm32_mode = stm32_mode
+
+        # Eğer STM32 manuel modda ise otonom seyrüseferi askıya al
+        if stm32_mode == MODE_MANUAL:
+            # Planlayıcı entegratörlerini sıfırla (Auto moda geri dönerken ani sıçramayı önlemek için)
+            self.planner.cte_integrator = 0.0
+            self.planner.last_target_heading = None
+            self.last_sent_speed = 0.0
+            self.last_sent_heading = curr_yaw
+            return {
+                "state": self.state,
+                "target_speed": 0.0,
+                "target_heading": curr_yaw
+            }
+            
         camera_lost = getattr(self.serial_client, "camera_lost", False) or getattr(self.serial_client, "camera_frozen", False)
             
         # FSM Durum Zaman Aşımı Kontrolü
@@ -227,10 +323,12 @@ class MissionController:
                         self.transition_to(self.pre_loiter_state)
                     else:
                         self.transition_to(STATE_PARKUR1)
-            # [Senaryo 1]: GPS Kilidi Kaybı -> LOITER (İstasyon Tutma) moduna geç
+            # [Senaryo 1]: GPS Kilidi Kaybı -> Soft Fail ile Dead Reckoning seyrüseferi (8 sn limitli)
+            # Eğer 8.0 saniyeden uzun sürerse, Smart LOITER moduna geçilir.
             elif gps_lock == 0:
-                logger.warning("Failsafe: GPS kilidi kayboldu! LOITER moduna geçiliyor.")
-                self.transition_to(STATE_LOITER)
+                if self.dr_start_time is not None and (now - self.dr_start_time >= 8.0):
+                    logger.error("Failsafe: GPS kilidi 8.0 saniyeden uzun süredir kayıp! Akıllı LOITER moduna geçiliyor.")
+                    self.transition_to(STATE_LOITER)
             # [Kötü Senaryo 5]: Kamera Merceğinin Tıkanması/Su Sıçraması Koruması
             elif getattr(self.serial_client, "detector", None) and getattr(self.serial_client.detector, "camera_blocked", False):
                 logger.error("Failsafe: Kamera merceği kapanned veya aşırı bulanıklaştı!")
@@ -439,9 +537,21 @@ class MissionController:
             target_heading = curr_yaw
             
         elif self.state == STATE_LOITER:
-            # Akıntıda sürüklenmeyi önlemek için minimal hız + heading hold (Görev 112)
-            target_speed = self.config.get("loiter_speed_ms", 0.3)
-            target_heading = curr_yaw
+            # Akıllı Loiter: Kilitlenen koordinata dönmeye çalış
+            if self.loiter_lat is not None and self.loiter_lon is not None:
+                # Sürüklenme düzeltmeli planlayıcı ile loiter noktasına planla
+                target_speed, target_heading, _, reached_all = self.planner.plan(
+                    curr_lat, curr_lon, curr_yaw, curr_speed,
+                    [(self.loiter_lat, self.loiter_lon)], 0, costmap, None, dt
+                )
+                # İstasyon noktasına çok yakınsak (örn < 1.2m) motoru rölantiye al
+                dx_l, dy_l = gps_to_meters(curr_lat, curr_lon, self.loiter_lat, self.loiter_lon)
+                dist_to_loiter = math.sqrt(dx_l**2 + dy_l**2)
+                if dist_to_loiter < 1.2:
+                    target_speed = 0.0
+            else:
+                target_speed = 0.0
+                target_heading = curr_yaw
 
         # 2.5 Kademeli Sanal Çit Koruması (Soft Geofence - Madde 4)
         if self.state not in [STATE_IDLE, STATE_FAILSAFE] and self.home_waypoint:
@@ -564,6 +674,10 @@ class MissionController:
 
         if new_state == STATE_LOITER:
             self.pre_loiter_state = self.state
+            # Akıllı loiter için kilitlenme koordinatları
+            self.loiter_lat = self.current_lat if not self.dr_active else self.dr_lat
+            self.loiter_lon = self.current_lon if not self.dr_active else self.dr_lon
+            logger.warning(f"LOITER İstasyon Tutma Koordinatı Kilitlendi: {self.loiter_lat:.6f}, {self.loiter_lon:.6f}")
 
         # STATE_RETURN moduna geçerken planlayıcıyı ve costmap'i temizle (Hata: 206 çözümü)
         if new_state == STATE_RETURN:

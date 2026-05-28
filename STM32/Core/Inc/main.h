@@ -20,6 +20,18 @@ extern "C" {
 #define MOTOR_RIGHT_PIN          GPIO_PIN_7
 #define MOTOR_RIGHT_PORT         GPIOA
 
+// Yeni Donanım Pin Tanımları
+#define LEAK_SENSOR_PIN          GPIO_PIN_4
+#define LEAK_SENSOR_PORT         GPIOA
+
+#define ULTRASONIC_TRIG_PIN      GPIO_PIN_5
+#define ULTRASONIC_TRIG_PORT     GPIOA
+#define ULTRASONIC_ECHO_PIN      GPIO_PIN_0
+#define ULTRASONIC_ECHO_PORT     GPIOB
+
+#define CURRENT_SENSOR_PIN       GPIO_PIN_0
+#define CURRENT_SENSOR_PORT      GPIOA
+
 // UART DMA Tampon Boyutu (main.c ve stm32f4xx_it.c arasında paylaşılır)
 #define USART1_RX_BUF_SIZE 256
 

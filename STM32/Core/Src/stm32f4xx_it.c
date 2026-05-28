@@ -5,6 +5,7 @@
 // Dışarıdan Alınan Çevre Birimleri
 extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
+extern UART_HandleTypeDef huart3;
 extern DMA_HandleTypeDef hdma_usart1_rx;
 extern TIM_HandleTypeDef htim3;
 
@@ -115,6 +116,26 @@ void USART2_IRQHandler(void) {
     HAL_UART_IRQHandler(&huart2);
 }
 
+// USART3 Global Kesmesi (RC Alıcı Haberleşmesi)
+void USART3_IRQHandler(void) {
+    if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) {
+        return;
+    }
+    uint32_t srval = huart3.Instance->SR;
+    if (srval & (USART_SR_ORE | USART_SR_FE | USART_SR_NE | USART_SR_PE)) {
+        volatile uint32_t dummy = huart3.Instance->DR;
+        (void)dummy;
+        
+        // Kesmeli RC alımını iptal et ve sıfırdan yeniden başlat
+        HAL_UART_AbortReceive(&huart3);
+        extern uint8_t rc_rx_byte;
+        HAL_UART_Receive_IT(&huart3, &rc_rx_byte, 1);
+        huart3.ErrorCode = HAL_UART_ERROR_NONE;
+        return;
+    }
+    HAL_UART_IRQHandler(&huart3);
+}
+
 // HAL UART Hata Callback Fonksiyonu (Yedekli Hata Kurtarma)
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) {
@@ -140,6 +161,16 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
         HAL_UART_AbortReceive(huart);
         extern uint8_t gps_rx_byte;
         HAL_UART_Receive_IT(huart, &gps_rx_byte, 1);
+        huart->ErrorCode = HAL_UART_ERROR_NONE;
+    }
+    else if (huart->Instance == USART3) {
+        volatile uint32_t dummy = huart->Instance->SR;
+        dummy = huart->Instance->DR;
+        (void)dummy;
+        
+        HAL_UART_AbortReceive(huart);
+        extern uint8_t rc_rx_byte;
+        HAL_UART_Receive_IT(huart, &rc_rx_byte, 1);
         huart->ErrorCode = HAL_UART_ERROR_NONE;
     }
 }

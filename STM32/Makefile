@@ -23,7 +23,8 @@ Core/Src/control.c \
 Core/Src/sensors.c \
 Core/Src/safety.c \
 Core/Src/stm32f4xx_it.c \
-Core/Src/system_stm32f4xx.c
+Core/Src/system_stm32f4xx.c \
+Core/Src/rc.c
 
 # HAL ve FreeRTOS kaynakları (C8 düzeltmesi: yorumdan çıkarıldı)
 C_SOURCES += $(wildcard Drivers/STM32F4xx_HAL_Driver/Src/*.c)

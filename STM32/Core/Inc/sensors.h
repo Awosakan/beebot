@@ -45,6 +45,8 @@ void sensors_gps_init(void);
 void sensors_gps_feed(uint8_t data);
 void sensors_gps_update_tick(uint32_t current_time_ms);
 float sensors_battery_read(ADC_HandleTypeDef *hadc);
+float sensors_read_ultrasonic(GPIO_TypeDef* TrigPort, uint16_t TrigPin, GPIO_TypeDef* EchoPort, uint16_t EchoPin);
+float sensors_current_read(ADC_HandleTypeDef *hadc);
 
 // Getter'lar
 GPS_Data_t sensors_get_gps(void);

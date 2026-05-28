@@ -3,6 +3,7 @@
 #include "control.h"
 #include "sensors.h"
 #include "safety.h"
+#include "rc.h"
 #include <string.h>
 
 // Çevre Birimleri Tanımları
@@ -11,8 +12,13 @@ I2C_HandleTypeDef hi2c1;
 TIM_HandleTypeDef htim3;
 UART_HandleTypeDef huart1; // Telefon Haberleşmesi
 UART_HandleTypeDef huart2; // GPS Haberleşmesi
+UART_HandleTypeDef huart3; // RC (i-BUS) Alıcısı
 DMA_HandleTypeDef hdma_usart1_rx;
 IWDG_HandleTypeDef hiwdg;
+
+// RC Alıcı Değişkenleri
+uint8_t rc_rx_byte = 0;
+volatile uint8_t global_selected_color_id = 0; // 1: Red, 2: Green, 3: Blue, 4: Yellow
 
 // FreeRTOS Görev Tanımları
 TaskHandle_t TelemetryTaskHandle;
@@ -50,6 +56,7 @@ static void MX_I2C1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_USART3_UART_Init(void);
 static void MX_IWDG_Init(void);
 
 void StartTelemetryTask(void *argument);
@@ -68,6 +75,7 @@ int main(void) {
     MX_DMA_Init();
     MX_USART1_UART_Init(); // Telefon Seri Portu
     MX_USART2_UART_Init(); // GPS Seri Portu
+    MX_USART3_UART_Init(); // RC Seri Portu (i-BUS)
     MX_I2C1_Init();        // IMU (MPU6050/9250)
     MX_ADC1_Init();        // Batarya Voltajı
     MX_TIM3_Init();        // Motor PWM Sinyalleri
@@ -77,6 +85,7 @@ int main(void) {
     control_init();
     protocol_parser_init(&serial_parser);
     sensors_gps_init();
+    rc_init();
     
     // Sensörlerin ilk okumasını alarak Emniyet Katmanını ilklendir
     float init_volts = sensors_battery_read(&hadc1);
@@ -97,12 +106,17 @@ int main(void) {
     HAL_NVIC_EnableIRQ(USART1_IRQn);
     HAL_NVIC_SetPriority(USART2_IRQn, 7, 0);
     HAL_NVIC_EnableIRQ(USART2_IRQn);
+    HAL_NVIC_SetPriority(USART3_IRQn, 7, 0);
+    HAL_NVIC_EnableIRQ(USART3_IRQn);
 
     // Telefon Haberleşmesi için DMA RX Circular modunu başlat
     HAL_UART_Receive_DMA(&huart1, usart1_rx_buf, USART1_RX_BUF_SIZE);
 
     // GPS Kesmeli Alımı Başlat (1 bayt kesmeli)
     HAL_UART_Receive_IT(&huart2, &gps_rx_byte, 1);
+
+    // RC Kesmeli Alımı Başlat (1 bayt kesmeli)
+    HAL_UART_Receive_IT(&huart3, &rc_rx_byte, 1);
 
     // FreeRTOS Görevlerini Tanımla ve Zamanlayıcıyı Başlat
     xTaskCreate(StartTelemetryTask, "TelemetryTask", 256, NULL, 2, &TelemetryTaskHandle);
@@ -180,6 +194,10 @@ void StartTelemetryTask(void *argument) {
         float bat = sensors_battery_read(&hadc1);
         global_battery_voltage = bat; // SafetyTask için paylaşılan değişken (A3 düzeltmesi)
         
+        // Akım ve Ultrasonik sensörleri de kritik bölge dışında oku (blokaj önleme)
+        float current_amps = sensors_current_read(&hadc1);
+        float distance_m = sensors_read_ultrasonic(ULTRASONIC_TRIG_PORT, ULTRASONIC_TRIG_PIN, ULTRASONIC_ECHO_PORT, ULTRASONIC_ECHO_PIN);
+        
         // Diğer Sensör Verilerini Kritik Bölge Korumasıyla Oku (Görev 3.3)
         taskENTER_CRITICAL();
         GPS_Data_t gps = sensors_get_gps();
@@ -204,6 +222,10 @@ void StartTelemetryTask(void *argument) {
         telem.mode = current_mode;
         telem.left_pwm = global_left_pwm;
         telem.right_pwm = global_right_pwm;
+        telem.selected_color_id = global_selected_color_id;
+        telem.leak_detected = safety_get_status().leak_detected;
+        telem.battery_current = current_amps;
+        telem.front_ultrasonic_m = distance_m;
 
         // E. Paketi Seri Port Formatına Dönüştür ve Gönder (SYNC1 + SYNC2 + MsgID + Len + Payload + CRC16)
         tx_packet[0] = SYNC_BYTE_1;
@@ -216,7 +238,7 @@ void StartTelemetryTask(void *argument) {
         tx_packet[4 + sizeof(Telemetry_t)] = (uint8_t)(crc & 0xFF);
         tx_packet[5 + sizeof(Telemetry_t)] = (uint8_t)((crc >> 8) & 0xFF);
         
-        uint16_t total_len = 6 + sizeof(Telemetry_t); // 54 + 6 = 60 bayt
+        uint16_t total_len = 6 + sizeof(Telemetry_t); // 59 + 6 = 65 bayt
         
         HAL_UART_Transmit(&huart1, tx_packet, total_len, 15);
 
@@ -233,6 +255,38 @@ void StartNavigationTask(void *argument) {
     for (;;) {
         float dt = 0.02f; // Sabit 20ms adım süresi
         
+        // i-BUS Alıcısını güncelle ve verileri oku
+        rc_update(HAL_GetTick());
+        RC_Data_t rc = rc_get_data();
+        
+        // Kumanda acil kapatma (Ch 6) kontrolü
+        if (rc.link_ok && rc.channels[5] > 1700) {
+            safety_trigger_emergency();
+        }
+        
+        // Kumanda mod seçimi (Ch 5) ve hedef renk (Ch 7) güncellemeleri
+        if (rc.link_ok) {
+            // Ch 5: < 1300 -> Otonom Mod, >= 1300 -> Manuel Mod
+            if (rc.channels[4] < 1300) {
+                if (safety_get_mode() == MODE_MANUAL) {
+                    safety_set_mode(MODE_AUTO);
+                }
+            } else {
+                if (safety_get_mode() == MODE_AUTO || safety_get_mode() == MODE_IDLE) {
+                    safety_set_mode(MODE_MANUAL);
+                }
+            }
+            
+            // Ch 7: Renk Seçimi hafızalama (VrA Potu: 1000us - 2000us)
+            uint8_t color_id = 0;
+            uint16_t vra_val = rc.channels[6];
+            if (vra_val < 1250)      color_id = 1; // Kırmızı (target_red)
+            else if (vra_val < 1500) color_id = 2; // Yeşil (target_green)
+            else if (vra_val < 1750) color_id = 3; // Mavi (target_blue)
+            else                     color_id = 4; // Sarı (yellow_obstacle)
+            global_selected_color_id = color_id;
+        }
+
         // A. IMU Verisini Oku ve Complementary Filtreyi Çalıştır
         sensors_imu_update(&hi2c1, dt);
         
@@ -249,14 +303,35 @@ void StartNavigationTask(void *argument) {
         uint8_t current_mode = safety_get_mode();
         
         if (current_mode == MODE_AUTO) {
-            // Tam otonom mod: PID devrededir
-            motors = control_update(current_yaw, target_heading, target_speed, dt);
+            // Tam otonom mod: PID devrededir (Hız ve Yön)
+            GPS_Data_t gps_data = sensors_get_gps();
+            float current_speed_ms = gps_data.sog; // Yere Göre Hız
+            motors = control_update(current_yaw, target_heading, current_speed_ms, target_speed, dt);
         } 
         else if (current_mode == MODE_MANUAL) {
-            // Manuel mod: Telefonun doğrudan diferansiyel komutları geçerlidir
-            // target_speed -> Sol itki, target_heading -> Sağ itki olarak taşınır
-            motors.left_thrust = target_speed;
-            motors.right_thrust = target_heading;
+            // Manuel mod: Kumanda aktif ise doğrudan kumanda çubukları ile diferansiyel sürüş yapılır
+            if (rc.link_ok) {
+                // Ch 3: Throttle (Sol Çubuk), Ch 1: Steering (Sağ Çubuk)
+                float throttle = ((float)rc.channels[2] - 1500.0f) / 500.0f;
+                float steering = ((float)rc.channels[0] - 1500.0f) / 500.0f;
+                
+                if (throttle > 1.0f) throttle = 1.0f;
+                if (throttle < -1.0f) throttle = -1.0f;
+                if (steering > 1.0f) steering = 1.0f;
+                if (steering < -1.0f) steering = -1.0f;
+                
+                motors.left_thrust = throttle + steering;
+                motors.right_thrust = throttle - steering;
+                
+                if (motors.left_thrust > 1.0f) motors.left_thrust = 1.0f;
+                if (motors.left_thrust < -1.0f) motors.left_thrust = -1.0f;
+                if (motors.right_thrust > 1.0f) motors.right_thrust = 1.0f;
+                if (motors.right_thrust < -1.0f) motors.right_thrust = -1.0f;
+            } else {
+                // Kumanda bağlantısı koptuysa motorları durdur
+                motors.left_thrust = 0.0f;
+                motors.right_thrust = 0.0f;
+            }
         } 
         else {
             // Idle, Failsafe veya Acil Durum modları: Motorları durdur
@@ -540,6 +615,34 @@ static void MX_USART2_UART_Init(void) {
     }
 }
 
+static void MX_USART3_UART_Init(void) {
+    // 1. USART3 ve GPIOB Saatlerini Aktifleştir
+    __HAL_RCC_USART3_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    
+    // 2. PB11 Pinini USART3 RX (AF7) olarak yapılandır
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitStruct.Pin = GPIO_PIN_11;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    // 3. UART Yapılandırması (420000 Baud, 8N1, Sadece RX)
+    huart3.Instance = USART3;
+    huart3.Init.BaudRate = 420000;
+    huart3.Init.WordLength = UART_WORDLENGTH_8B;
+    huart3.Init.StopBits = UART_STOPBITS_1;
+    huart3.Init.Parity = UART_PARITY_NONE;
+    huart3.Init.Mode = UART_MODE_RX;
+    huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+    huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+    if (HAL_UART_Init(&huart3) != HAL_OK) {
+        Error_Handler();
+    }
+}
+
 static void MX_DMA_Init(void) {
     __HAL_RCC_DMA2_CLK_ENABLE();
 
@@ -559,10 +662,6 @@ static void MX_DMA_Init(void) {
     }
 
     __HAL_LINKDMA(&huart1, hdmarx, hdma_usart1_rx);
-    
-    // Kesme önceliklerini ayarla (Görev 68)
-    HAL_NVIC_SetPriority(DMA2_Stream5_IRQn, 6, 0);
-    HAL_NVIC_EnableIRQ(DMA2_Stream5_IRQn);
 }
 
 static void MX_GPIO_Init(void) {
@@ -571,6 +670,33 @@ static void MX_GPIO_Init(void) {
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
+
+    // ADC1 Analog Pinleri (PA0 Akım, PA1 Voltaj)
+    GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1;
+    GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    // Su Sızıntı Sensörü (PA4, Input Pull-up)
+    GPIO_InitStruct.Pin = LEAK_SENSOR_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(LEAK_SENSOR_PORT, &GPIO_InitStruct);
+
+    // Ultrasonik Trigger (PA5, Output)
+    GPIO_InitStruct.Pin = ULTRASONIC_TRIG_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(ULTRASONIC_TRIG_PORT, &GPIO_InitStruct);
+
+    // Ultrasonik Echo (PB0, Input)
+    GPIO_InitStruct.Pin = ULTRASONIC_ECHO_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(ULTRASONIC_ECHO_PORT, &GPIO_InitStruct);
 
     // Hot Reboot Thrashing Önlemi (Görev 65): Motor PWM pinlerini (PA6, PA7) önce Çıkış Low olarak tut
     HAL_GPIO_WritePin(GPIOA, MOTOR_LEFT_PIN | MOTOR_RIGHT_PIN, GPIO_PIN_RESET);
