@@ -23,7 +23,7 @@ Sistem, kaynak yönetimi, işlem hızı ve donanımsal güvenlik gereksinimlerin
   * **OpenCV DNN (Headless):** Kamera akışı alma, video loglama ve derin öğrenme modellerinin GPU (Adreno 630 OpenCL) üzerinde koşturulması.
   * **NumPy:** Hızlı matris işlemleri, ızgara haritası (costmap) güncellemeleri ve potansiyel alan vektör hesaplamaları.
   * **PySerial:** Otomatik kurtarma (auto-reconnect) özellikli, asenkron ve düşük gecikmeli seri haberleşme.
-  * **Ultralytics YOLOv8 (ONNX):** Duba tespiti için optimize edilmiş derin öğrenme model çıkarımı.
+  * **MobileNetV3-SSD (ONNX/OpenCV DNN):** CPU/GPU (OpenCL) üzerinde aşırı ısınmayı (thermal throttling) önlemek için optimize edilmiş duba algılama modeli.
 
 ### 2. Alçak Seviye Kontrol Katmanı (STM32F405RGT6 / Bare-Metal)
 * **İşletim Sistemi:** FreeRTOS (Çoklu görev yönetimi ve deterministik çalışma için).
@@ -49,7 +49,7 @@ graph TD
     Cam1[Sol UVC Kamera 120°] -->|Video Frame| B[OnePlus 6 - Linux Chroot]
     Cam2[Sağ UVC Kamera 120°] -->|Video Frame| B
     Lidar[RPLIDAR A1 Lazer] -->|Scan Points| B
-    B -->|YOLOv8 ONNX / HSV Fallback| C[Duba Dedektörü]
+    B -->|MobileNetV3-SSD / HSV Fallback| C[Duba Dedektörü]
     C -->|Mesafe & Açı| D[Çift Katmanlı Costmap]
     Lidar -->|Engel Noktaları| D
     D -->|COLREGs İtici Güçler| E[APF Rota Planlayıcı]
@@ -101,7 +101,7 @@ Projedeki yazılımsal ve donanımsal işlevlerin, kod dosyaları, sınıf/fonks
 
 | Modül / Özellik | Alt Görev | Sorumlu Dosya / Sınıf | Çalışma Seviyesi | Açıklama |
 | :--- | :--- | :--- | :--- | :--- |
-| **Algılama (Perception)** | YOLO Model Çıkarımı | [detector.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/detector.py) -> `BuoyDetector.detect()` | Yüksek Seviye (Python) | YOLOv8 ONNX modelini çalıştırarak dubaların bounding box bilgilerini çıkarır. |
+| **Algılama (Perception)** | Yapay Cihaz Model Çıkarımı | [detector.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/detector.py) -> `BuoyDetector.detect()` | Yüksek Seviye (Python) | MobileNetV3-SSD modelini çalıştırarak dubaların bounding box bilgilerini çıkarır. |
 | | Çoklu Kamera Yönetimi | [main.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/main.py) -> `VideoGrabber` | Yüksek Seviye (Python) | Birden fazla kamerayı okur ve açı offsetleri uygulayarak duba yönelimlerini düzeltir. |
 | | LIDAR Veri Toplama | [main.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/main.py) -> `LidarWorker` | Yüksek Seviye (Python) | RPLIDAR A1 verilerini asenkron okur ve costmap katmanına engel olarak yazar. |
 | | HSV Renk Bölütleme | [detector.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/detector.py) -> `BuoyDetector.hsv_fallback()` | Yüksek Seviye (Python) | Derin öğrenme başarısız olduğunda veya karanlıkta yedek HSV filtresiyle duba tespiti yapar. |
@@ -138,7 +138,7 @@ Projedeki yazılımsal ve donanımsal işlevlerin, kod dosyaları, sınıf/fonks
   * [main.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/main.py) - Giriş noktası. Thread yönetimi, USB reconnect, CPU Affinity, çoklu kamera okuyucu ve LIDAR işçisi.
   * [protocol.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/protocol.py) - STM32 ile 68 baytlık telemetri ve 17 baytlık komut paketlerini CRC16 ile eşleyen binary haberleşme modülü.
   * [telemetry_logger.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/telemetry_logger.py) - Bellek sızıntısı korumalı (OOM önleme kuyruklu) asenkron video, CSV ve JSON costmap loglayıcı.
-  * [detector.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/detector.py) - ONNX YOLOv8 duba dedektörü, HSV renk bölütleme yedek filtresi ve mercek tıkanıklık koruması.
+  * [detector.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/detector.py) - ONNX MobileNetV3-SSD duba dedektörü, HSV renk bölütleme yedek filtresi ve mercek tıkanıklık koruması.
   * [costmap.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/costmap.py) - Yerel Occupancy Grid. Kamera ve LIDAR verilerinden engel haritası şişirme ve COLREGs sağa kaçış itimi üretimi.
   * [planner.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/planner.py) - IvP-Lite eylem uzayı planlayıcı. Akıntı sürüklenmesine karşı CTE integral terimi ve kapılardan tam geçiş için Along-Track Plane Crossing mantığı.
   * [mission_control.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/mission_control.py) - Sonlu Durum Makinesi (FSM). 100m Öngörülü Sanal Çit koruması, GPS kaybı Dead Reckoning moduna geçişi ve Failsafe kararları.
@@ -228,5 +228,24 @@ python scratch/sitl_simulator.py
 3. Kartı micro-USB kablosuyla bilgisayara bağlayın.
 4. **STM32CubeProgrammer** yazılımını açın. Sağ üstteki bağlantı türünü **USB** seçip **Connect** butonuna basın.
 5. `STM32/build/beebot.bin` (veya kurtarma dosyası `rollback.bin`) dosyasını seçin.
-6. **Start Programming** butonuna basarak yükleme işlemini tamamlayın.
+6. Click **Start Programming** (veya programlamayı başlat) butonuna basarak yükleme işlemini tamamlayın.
 7. Yükleme bittiğinde `BOOT0` pinini `GND` konumuna çekip kartı yeniden başlatın.
+
+---
+
+## 🚀 Son Güncellemeler ve İyileştirmeler (Mayıs 2026)
+
+Projede en son gerçekleştirilen kritik düzeltmeler ve mimari iyileştirmeler şunlardır:
+
+1. **YOLOv8 -> MobileNetV3-SSD Geçişi:**
+   * OnePlus 6'nın Snapdragon 845 işlemcisinde oluşabilecek aşırı ısınmayı ve termal yavaşlamayı (thermal throttling) önlemek için YOLOv8 modeli yerine OpenCV DNN altyapısı ile çalışan **MobileNetV3-SSD** modeline geçildi.
+   * GPU (OpenCL) ve CPU üzerinde son derece kararlı çalışan bu model, duba algılama performansından ödün vermeden işlemci sıcaklığını güvenli sınırlarda tutmaktadır.
+   * Düşük ışık, aşırı parlama ve dalgalı deniz koşulları için dinamik **HSV Filtreleme ve Kontur Analizi** algoritmaları yedek perceptron katmanı olarak sisteme entegre edildi.
+
+2. **STM32 DMA NDTR Dairesel Tampon Kilitlenme Düzeltmesi:**
+   * Telefon ile STM32 arasındaki 68 baytlık dairesel USART DMA veri transferinde yaşanan kilitlenme (infinite loop) riski çözüldü.
+   * `main.c` dosyasındaki DMA okuma işaretçisi (`dma_write_ptr`) hesaplanırken `USART1_RX_BUF_SIZE` boyutuna göre modulo (`%`) koruması getirilerek arabellek sınır taşması engellendi.
+
+3. **`beebot_kontrol.py` Tek Tuşla Yönetim Sihirbazı:**
+   * Yarış günü donanım ve yazılımların hızlı kontrolü için terminal karmaşasını bitiren bir yönetim sihirbazı geliştirildi. Bu panel üzerinden tek tıkla eksik kütüphaneler kurulabilir, port yetkileri (`chmod 666`) ayarlanabilir ve dry-run testleri başlatılabilir.
+

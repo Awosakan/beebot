@@ -145,4 +145,19 @@ Yarış esnasında yaşanabilecek olası olumsuz durumlar ve alınacak önlemler
 | **Kamikaze hedefi (kırmızı/yeşil duba) anlık olarak kaybedildi.** | 3 Aşamalı Kurtarma Devreye Girer: (1) 1 sn boyunca son bilinen rotaya git, (2) 2.5 sn boyunca arama modunda dairesel dön, (3) 10 sn boyunca bulunamazsa eve dönüş modunu (`RETURN_HOME`) tetikle. | Sistemin dairesel tarama yapmasını bekleyin, hedefi tekrar yakalayamazsa otonom eve dönüşü izleyin. |
 
 ---
+
+## 7. Ekstra Yarış Günü ve Son Değişiklik Kontrolleri
+
+Yarış günü suya indirme işleminden hemen önce en son yapılan yazılım güncellemelerinin fiziki olarak doğrulandığından emin olun:
+
+- [ ] **Yapay Zeka Model Ağırlıklarının Kontrolü:**
+  * OnePlus 6 üzerindeki otonomi dizininde `high_level/src/models/` klasörünün altında `mobilenet_v3_ssd.onnx` ve `mobilenet_v3_ssd.txt` (etiket) dosyalarının eksiksiz bulunduğunu kontrol edin.
+- [ ] **STM32 Son Derleme (Build) Doğrulaması:**
+  * DMA kilitlenme hatası (`main.c`) düzeltildikten sonra projenin derlendiğinden emin olmak için `STM32` klasöründe terminal üzerinden `make clean && make` komutlarını çalıştırın.
+  * Oluşan yeni `beebot.bin` dosyasını DFU Guide yönergelerine uygun olarak STM32 otopilotuna flashlayın. Eski kilitlenme riski taşıyan binary sürümünün kalmadığından emin olun.
+- [ ] **beebot_kontrol.py ile Donanım İzinlerinin Yenilenmesi:**
+  * OnePlus 6 telefonu her yeniden başlatıldığında veya USB kablosu sökülüp takıldığında `/dev/ttyUSB0` ve Lidar port izinleri sıfırlanabilir. Sihirbazın 4. seçeneği olan "Seri Port ve Lidar İzinlerini Tanımla (chmod 666)" adımını koşturmayı unutmayın.
+
+---
 **Teknofest 2026 Otonom İDA yarışmasında ekibimize başarılar dileriz! Beebot yarışmaya hazır!**
+

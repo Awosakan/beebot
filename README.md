@@ -23,7 +23,7 @@ The system is built on a layered technology stack to satisfy demanding resource 
   * **OpenCV DNN (Headless):** Camera stream grabbing, video logging, and deep learning model inference accelerated on the GPU (Adreno 630 OpenCL).
   * **NumPy:** High-speed matrix operations, egocentric costmap updates, and potential field vector calculations.
   * **PySerial:** Asynchronous, low-latency serial communication with auto-reconnect capabilities.
-  * **Ultralytics YOLOv8 (ONNX):** Lightweight, optimized deep learning model inference for buoy detection.
+  * **MobileNetV3-SSD (ONNX/OpenCV DNN):** Optimized buoy detection model running on CPU/GPU (OpenCL) to prevent thermal throttling.
 
 ### 2. Low-Level Control Layer (STM32F405RGT6 / Bare-Metal)
 * **Operating System:** FreeRTOS (Ensures deterministic multi-task scheduling and real-time safety).
@@ -49,7 +49,7 @@ graph TD
     Cam1[Left UVC Camera 120°] -->|Video Frame| B[OnePlus 6 - Linux Chroot]
     Cam2[Right UVC Camera 120°] -->|Video Frame| B
     Lidar[RPLIDAR A1 Laser] -->|Scan Points| B
-    B -->|YOLOv8 ONNX / HSV Fallback| C[Buoy Detector]
+    B -->|MobileNetV3-SSD / HSV Fallback| C[Buoy Detector]
     C -->|Distance & Bearing| D[Dual-Layer Costmap]
     Lidar -->|Obstacle Points| D
     D -->|COLREGs Repulsive Vectors| E[APF Path Planner]
@@ -101,7 +101,7 @@ Detailed breakdown of high-level and low-level software responsibilities, mapped
 
 | Module / Feature | Sub-task | Source File / Class | Layer | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| **Perception** | YOLO Model Inference | [detector.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/detector.py) -> `BuoyDetector.detect()` | High-Level (Python) | Runs YOLOv8 ONNX model to extract real-time buoy bounding boxes. |
+| **Perception** | AI Model Inference | [detector.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/detector.py) -> `BuoyDetector.detect()` | High-Level (Python) | Runs MobileNetV3-SSD model to extract real-time buoy bounding boxes. |
 | | Multi-Camera Management | [main.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/main.py) -> `VideoGrabber` | High-Level (Python) | Captures frames from multiple cameras and applies angular offsets to align buoy bearings. |
 | | LIDAR Scan Ingestion | [main.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/main.py) -> `LidarWorker` | High-Level (Python) | Asynchronously reads RPLIDAR A1 scans and registers obstacle points to the costmap. |
 | | HSV Color Segmentation | [detector.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/detector.py) -> `BuoyDetector.hsv_fallback()` | High-Level (Python) | Fallback algorithm using HSV thresholding during low-light or glare conditions. |
@@ -138,7 +138,7 @@ Detailed breakdown of high-level and low-level software responsibilities, mapped
   * [main.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/main.py) - Program entry point. Manages threading, USB reconnect, CPU Affinity, multi-camera readers, and LIDAR parsing.
   * [protocol.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/protocol.py) - Binary serial module implementing the 68-byte telemetry and 17-byte command packet parser with CRC16 validation.
   * [telemetry_logger.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/telemetry_logger.py) - Memory-safe (queue-backed) logger writing H.264 video streams, CSV telemetry, and JSON occupancy grid costmaps.
-  * [detector.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/detector.py) - YOLOv8 ONNX model inference wrapper, backup HSV color segmenter, and camera lens obstruction monitor.
+  * [detector.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/detector.py) - MobileNetV3-SSD ONNX model inference wrapper, backup HSV color segmenter, and camera lens obstruction monitor.
   * [costmap.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/costmap.py) - Local occupancy grid map incorporating camera and LIDAR points with asymmetric COLREGs avoidance fields.
   * [planner.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/planner.py) - Path planning using an Artificial Potential Field (APF) with integrated CTE correction and along-track gate validation.
   * [mission_control.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/mission_control.py) - Finite State Machine (FSM). Manages mission transitions, predictive 100m geofence safety, and sensor dropout fallbacks.
@@ -230,3 +230,22 @@ Vessel hardware safety is monitored by low-level, real-time FreeRTOS safety laye
 5. Select the binary file `STM32/build/beebot.bin` (or the recovery image `rollback.bin`).
 6. Click **Start Programming** to upload the firmware.
 7. Once flashing is complete, disconnect the board, return the `BOOT0` pin to `GND`, and reboot.
+
+---
+
+## 🚀 Recent Updates and Enhancements (May 2026)
+
+The following critical fixes and architectural improvements have been recently implemented:
+
+1. **YOLOv8 -> MobileNetV3-SSD Transition:**
+   * Replaced the heavy YOLOv8 model with the lightweight **MobileNetV3-SSD** model running via OpenCV DNN to prevent CPU/GPU thermal throttling on the OnePlus 6's Snapdragon 845 processor.
+   * This optimized network runs extremely stably using CPU and GPU (OpenCL) acceleration, maintaining solid buoy detection rates without causing thermal overhead.
+   * Added dynamic **HSV Thresholding & Contour Analysis** as a fallback perception channel to handle low-light, extreme glare, and highly wavy marine conditions.
+
+2. **STM32 DMA NDTR Circular Buffer Bug Fix:**
+   * Solved a potential infinite loop/lockup vulnerability in the 68-byte serial USART DMA data transmission between the phone and the STM32.
+   * Wrapped the DMA write pointer (`dma_write_ptr`) calculations with a modulo (`%`) bounds check against `USART1_RX_BUF_SIZE` in `main.c`, mitigating buffer pointer overflow risks.
+
+3. **`beebot_kontrol.py` One-Click CLI Wizard:**
+   * Introduced a unified management wizard script in the root directory to streamline race-day hardware configurations. It handles automatic missing package validation, USB port permission mapping (`chmod 666`), dry-run testing, and autonomous navigation launch.
+

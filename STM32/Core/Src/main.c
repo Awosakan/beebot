@@ -140,7 +140,7 @@ void StartTelemetryTask(void *argument) {
     for (;;) {
         // A. DMA Circular Buffer'daki yeni gelen baytları ayrıştırıcıya besle
         // DMA yazma işaretçisini bul (kalan veri miktarından hesaplanır)
-        uint16_t dma_write_ptr = USART1_RX_BUF_SIZE - __HAL_DMA_GET_COUNTER(huart1.hdmarx);
+        uint16_t dma_write_ptr = (USART1_RX_BUF_SIZE - __HAL_DMA_GET_COUNTER(huart1.hdmarx)) % USART1_RX_BUF_SIZE;
         
         while (usart1_rx_read_ptr != dma_write_ptr) {
             uint8_t byte = usart1_rx_buf[usart1_rx_read_ptr];
