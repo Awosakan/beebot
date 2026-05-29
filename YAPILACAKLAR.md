@@ -61,18 +61,24 @@ STM32 denetleyicisi motor kontrolü, sensör toplama ve güvenlikten sorumludur.
 
 Telefon, otonom kararları veren ve görüntü işlemini gerçekleştiren beyindir.
 
-### A. Tek Tuşla Kurulum ve Yönetim (Önerilen)
-Yarış günü veya test sırasında karmaşık terminal komutlarıyla tek tek uğraşmamak için ana dizinde yer alan **`beebot_kontrol.py`** yönetim panelini başlatın:
+> [!IMPORTANT]
+> **A ve B adımları birbirinin alternatifi değildir.** Yazılımın ve donanımın yarışa hazır olması için **her iki adımı da sırayla yapmanız zorunludur.**
+
+### A. Tek Tuşla Kurulum ve Yönetim (Yazılımsal Hazırlık)
+Yarış günü veya test sırasında karmaşık terminal komutlarıyla tek tek uğraşmamak için ana dizinde yer alan ve tüm işlemleri sırayla otomatik gerçekleştiren **`beebot_kontrol.py`** sihirbazını başlatın:
 ```bash
 python beebot_kontrol.py
 ```
-Açılan menü üzerinden:
-*   **Seçenek 1**'i seçerek eksik olan tüm Python kütüphanelerini otomatik olarak kontrol edebilir ve tek tıkla kurabilirsiniz.
-*   **Seçenek 4**'ü seçerek USB seri port ve LIDAR bağlantı izinlerini (`chmod 666`) telefonda tek tıkla tanımlayabilirsiniz.
+Bu sihirbaz sırasıyla şunları yapacaktır:
+1.  **Kütüphane Kontrolü:** Eksik olan tüm Python kütüphanelerini (`opencv`, `numpy`, `pyserial`, `rplidar`) kontrol eder ve internet varsa tek tıkla kurar.
+2.  **Port İzinleri:** Linux/Android (Termux) üzerinde çalıştırıldığında, USB bağlantı izinlerini (`chmod 666`) telefonda otomatik tanımlar (Root izni gerekir).
+3.  **Sistem Doğrulama:** 4 ana otonomi ve yapay zeka testini (Dry-Run) arka arkaya koşturup test sonuçlarını raporlar.
+4.  **Konfigürasyon Güncelleme:** Ekran üzerinden size hedef rengi sorar ve `config.json` dosyasını otomatik günceller.
+5.  **Otonom Sistemi Başlatma:** STM32 seri portunu otomatik algılar ve otonomi döngüsünü başlatır.
 
-### B. USB OTG Bağlantısı ve Yapılandırma Dosyası
+### B. USB OTG Bağlantısı (Fiziksel Entegrasyon)
 1. Kaliteli bir USB-C OTG çoklayıcı adaptör kullanarak telefonu hem STM32'nin seri-USB köprüsüne (FTDI/CH340) hem de LIDAR sensörüne bağlayın.
-2. [config.json](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/config.json) dosyasını yarış pistine uygun enlem/boylam waypointleri (`p1_wps`, `p2_wps`), hedef renk (`target_color`) ve sensör durumlarına göre güncelleyin.
+2. [config.json](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/config.json) dosyasındaki yarış waypointlerini (`p1_wps` ve `p2_wps`) yarış komitesinin verdiği enlem/boylam koordinatlarına göre düzenleyin.
 
 ---
 
@@ -80,22 +86,18 @@ Açılan menü üzerinden:
 
 Suya inmeden önce sistemin bütünsel olarak çalıştığından emin olmak için bu testi mutlaka yapın.
 
-### A. Tek Tuşla Tüm Entegrasyon Testlerini Çalıştırmak
-1. Ana dizindeki kontrol panelini başlatın:
+### A. Tek Tuşla Dry-Run Testi
+1. Telefonu veya test bilgisayarını tekneye bağladıktan sonra kontrol sihirbazını başlatın:
    ```bash
    python beebot_kontrol.py
    ```
-2. Menüden **Seçenek 2**'yi (`Tüm Entegrasyon Testlerini Çalıştır (Dry-Run)`) seçin. Bu seçenek sırasıyla:
-   * STM32 haberleşme protokol uyumluluğunu,
-   * MobileNet-SSD ve HSV yapay zeka algoritmasını,
-   * FSM durum geçiş zaman aşımı ve kurtarma manevralarını,
-   * Çift kanallı asenkron loglama sistemini otomatik test eder.
-3. Testler bittiğinde ekranda **`🎉 TEBRİKLER: Tüm sistem testleri başarıyla tamamlandı! Beebot yarışa hazır.`** yazısını gördüğünüzden emin olun.
+2. Sihirbazın **[ADIM 3]** aşamasında tüm entegrasyon testlerinin **`[✔] BAŞARILI`** olarak tamamlandığını ve **`Tüm entegrasyon testleri BAŞARIYLA GEÇİLDİ!`** yazısını onaylayın.
 
 ### B. Kuru Eyleyici ve Otonomi Testi
-1. Kontrol panelinden **Seçenek 3**'ü (`Otonom Sistemi Başlat`) seçin. Sistem otomatik olarak bağlı portları tarayacaktır. Bağlı cihaz yoksa otomatik olarak **MOCK (Simülasyon) modunda** başlayacaktır.
-2. Kameranın önüne kırmızı veya sarı bir cisim getirerek dümen servosunun ve motorların anında cisimden kaçınma manevrası yaptığını karada gözlemleyin.
-3. `/ida_logs` klasöründe ve yedek olarak takılı olan USB bellekte `dosya1_kamera_*.mp4`, `dosya2_telemetri_*.csv` ve `dosya3_costmap_*.jsonl` dosyalarının oluştuğunu ve boyutlarının 0 byte'tan büyük olduğunu teyit edin.
+1. Sihirbazın **[ADIM 4]** aşamasında size sorulan hedef rengi (örn: `1` tuşuna basarak kırmızı) belirleyin.
+2. **[ADIM 5]** aşamasında sistem otonom olarak çalışmaya başlayacaktır (Cihaz bağlı değilse otomatik MOCK modunda başlar).
+3. Kameranın önüne kırmızı veya sarı bir cisim getirerek dümen servosunun ve motorların anında cisimden kaçınma yönünde manevra yaptığını gözlemleyin.
+4. `/ida_logs` klasöründe ve yedek olarak takılı olan USB bellekte `dosya1_kamera_*.mp4`, `dosya2_telemetri_*.csv` ve `dosya3_costmap_*.jsonl` dosyalarının oluştuğunu doğrulayın.
 
 ---
 
