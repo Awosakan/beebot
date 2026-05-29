@@ -61,27 +61,18 @@ STM32 denetleyicisi motor kontrolü, sensör toplama ve güvenlikten sorumludur.
 
 Telefon, otonom kararları veren ve görüntü işlemini gerçekleştiren beyindir.
 
-### A. Python Çevre Birim Kurulumu
-Telefon üzerinde yer alan Linux kabuğunda (Termux veya Linux Deploy ortamında) aşağıdaki komutu çalıştırarak gerekli tüm kütüphanelerin yüklü olduğunu doğrulayın:
+### A. Tek Tuşla Kurulum ve Yönetim (Önerilen)
+Yarış günü veya test sırasında karmaşık terminal komutlarıyla tek tek uğraşmamak için ana dizinde yer alan **`beebot_kontrol.py`** yönetim panelini başlatın:
 ```bash
-# Proje ana dizinindeyken bağımlılıkları yükleyin:
-pip install -r requirements.txt
+python beebot_kontrol.py
 ```
-*(Gerekli paketler: `opencv-python`, `numpy`, `pyserial`, `rplidar-roboticia`)*
+Açılan menü üzerinden:
+*   **Seçenek 1**'i seçerek eksik olan tüm Python kütüphanelerini otomatik olarak kontrol edebilir ve tek tıkla kurabilirsiniz.
+*   **Seçenek 4**'ü seçerek USB seri port ve LIDAR bağlantı izinlerini (`chmod 666`) telefonda tek tıkla tanımlayabilirsiniz.
 
-### B. USB OTG Bağlantısı ve İzinleri
-1. Kaliteli bir USB-C OTG adaptörü kullanarak telefonu STM32'nin seri-USB köprüsüne (FTDI/CH340) bağlayın.
-2. Lidar sensörünün USB kablosunu da OTG çoklayıcıya bağlayın.
-3. Android sistemi üzerinde `/dev/ttyUSB0` (Lidar) ve `/dev/ttyACM0` (STM32) portlarına okuma/yazma izinlerini tanımlayın:
-   ```bash
-   su -c "chmod 666 /dev/ttyUSB0 /dev/ttyACM0"
-   ```
-
-### C. Yapılandırma Dosyası (`config.json`) Kontrolü
-[config.json](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/config.json) dosyasını yarış pistine uygun olarak güncelleyin:
-*   **Pist Waypointleri:** Yarış komitesinin verdiği enlem/boylam koordinatlarını `p1_wps` (Nokta takibi) ve `p2_wps` (Engel kaçınma) dizilerine girin.
-*   **Hedef Renk:** Parkur 3 Kamikaze görevi için hedef rengi (`target_color`) `"target_red"`, `"target_green"` ya da `"target_blue"` olarak ayarlayın.
-*   **LIDAR Aktivasyonu:** Lidar bağlı ise `"lidar_enabled": true`, değilse `false` yapın.
+### B. USB OTG Bağlantısı ve Yapılandırma Dosyası
+1. Kaliteli bir USB-C OTG çoklayıcı adaptör kullanarak telefonu hem STM32'nin seri-USB köprüsüne (FTDI/CH340) hem de LIDAR sensörüne bağlayın.
+2. [config.json](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/config.json) dosyasını yarış pistine uygun enlem/boylam waypointleri (`p1_wps`, `p2_wps`), hedef renk (`target_color`) ve sensör durumlarına göre güncelleyin.
 
 ---
 
@@ -89,26 +80,22 @@ pip install -r requirements.txt
 
 Suya inmeden önce sistemin bütünsel olarak çalıştığından emin olmak için bu testi mutlaka yapın.
 
-1. **Test Kodlarını Çalıştırın:**
+### A. Tek Tuşla Tüm Entegrasyon Testlerini Çalıştırmak
+1. Ana dizindeki kontrol panelini başlatın:
    ```bash
-   # Sistem uyumluluk testini çalıştırın
-   python scratch/test_stm32_compatibility.py
-   
-   # Yapay zeka ve duba algılama testini çalıştırın
-   python scratch/test_ssd_detection.py
+   python beebot_kontrol.py
    ```
-2. **Asenkron Günlük Sistemini Çalıştırın:**
-   ```bash
-   python scratch/test_usb_logging.py
-   ```
-   Bu test başarıyla tamamlandığında, tekne içindeki `/ida_logs` klasöründe ve yedek olarak takılı olan USB bellekte şu dosyaların oluştuğunu kontrol edin:
-   - `dosya1_kamera_*.mp4` (Video kaydı)
-   - `dosya2_telemetri_*.csv` (Hız, konum, pusula verileri)
-   - `dosya3_costmap_*.jsonl` (Lidar engel haritası verisi)
+2. Menüden **Seçenek 2**'yi (`Tüm Entegrasyon Testlerini Çalıştır (Dry-Run)`) seçin. Bu seçenek sırasıyla:
+   * STM32 haberleşme protokol uyumluluğunu,
+   * MobileNet-SSD ve HSV yapay zeka algoritmasını,
+   * FSM durum geçiş zaman aşımı ve kurtarma manevralarını,
+   * Çift kanallı asenkron loglama sistemini otomatik test eder.
+3. Testler bittiğinde ekranda **`🎉 TEBRİKLER: Tüm sistem testleri başarıyla tamamlandı! Beebot yarışa hazır.`** yazısını gördüğünüzden emin olun.
 
-3. **Kuru Eyleyici (Motor/Dümen) Testi:**
-   * Otonom yazılımı karada çalıştırın (`python high_level/src/main.py MOCK`).
-   * Kameranın önüne kırmızı veya sarı bir cisim getirdiğinizde dümen servosunun/motorların anında cismin tersi yönüne kaçınma manevrası yaptığını gözlemleyin.
+### B. Kuru Eyleyici ve Otonomi Testi
+1. Kontrol panelinden **Seçenek 3**'ü (`Otonom Sistemi Başlat`) seçin. Sistem otomatik olarak bağlı portları tarayacaktır. Bağlı cihaz yoksa otomatik olarak **MOCK (Simülasyon) modunda** başlayacaktır.
+2. Kameranın önüne kırmızı veya sarı bir cisim getirerek dümen servosunun ve motorların anında cisimden kaçınma manevrası yaptığını karada gözlemleyin.
+3. `/ida_logs` klasöründe ve yedek olarak takılı olan USB bellekte `dosya1_kamera_*.mp4`, `dosya2_telemetri_*.csv` ve `dosya3_costmap_*.jsonl` dosyalarının oluştuğunu ve boyutlarının 0 byte'tan büyük olduğunu teyit edin.
 
 ---
 
