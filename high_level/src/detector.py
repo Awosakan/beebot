@@ -12,6 +12,7 @@ class BuoyDetector:
     YOLO ONNX ve HSV Renk Eşikleme olmak üzere çift kanallı yedekli çalışır (F-35 Failsafe standardı).
     """
     def __init__(self, model_path: str = None, 
+                 config_path: str = None,
                  image_width: int = 640, 
                  image_height: int = 480,
                  hfov: float = 80.0,  # Derece cinsinden Yatay Görüş Açısı (Horizontal Field of View)
@@ -57,8 +58,22 @@ class BuoyDetector:
         
         if model_path:
             try:
-                # OpenCV DNN ile MobileNetV3-SSD modelini yükle
-                self.net = cv2.dnn.readNet(model_path)
+                # Dosyaları ikili modda okuyarak bellekten yükle (Windows Türkçe karakter/Şahakan yol hatası çözümü)
+                with open(model_path, "rb") as f:
+                    model_bytes = f.read()
+                model_buffer = np.frombuffer(model_bytes, dtype=np.uint8)
+                
+                if config_path and config_path.endswith(".pbtxt"):
+                    with open(config_path, "rb") as f:
+                        config_bytes = f.read()
+                    config_buffer = np.frombuffer(config_bytes, dtype=np.uint8)
+                    self.net = cv2.dnn.readNetFromTensorflow(model_buffer, config_buffer)
+                else:
+                    try:
+                        self.net = cv2.dnn.readNetFromONNX(model_buffer)
+                    except Exception:
+                        self.net = cv2.dnn.readNet(model_path)
+                
                 self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
                 
                 # [GPU Hızlandırma Optimizasyonu]: Adreno 630 GPU üzerinde OpenCL veya Vulkan ile çalıştır
@@ -74,7 +89,7 @@ class BuoyDetector:
                         logger.info("Performans Optimizasyonu: GPU hedef atanamadı, çıkarım CPU (ARM NEON) üzerinde yapılacak.")
                 
                 self.use_fallback = False
-                logger.info(f"MobileNet-SSD modeli başarıyla yüklendi: {model_path}")
+                logger.info(f"MobileNet-SSD modeli bellekten başarıyla yüklendi: {model_path}")
             except Exception as e:
                 logger.error(f"MobileNet-SSD modeli yüklenemedi: {e}. HSV Renk Filtreleme moduna geçiliyor.")
                 self.use_fallback = True
@@ -502,6 +517,8 @@ class BuoyDetector:
 
     def draw_detections(self, frame, detections: list):
         for det in detections:
+            if "bbox" not in det:
+                continue
             x, y, w, h = det["bbox"]
             label = f"{det['class']} ({det['confidence']:.2f})"
             dist_label = f"Dist: {det['distance']:.2f}m, Ang: {math.degrees(det['bearing']):.1f}deg"

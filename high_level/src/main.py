@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import serial
 import gc
+import math
 
 # Modüllerimizi içe aktaralım
 # Python'ın dosyayı doğrudan çalıştırma durumunu desteklemek için path eklemesi yapalım
@@ -327,7 +328,7 @@ class GCSListener(threading.Thread):
 
 class IDANode:
     def __init__(self, serial_port: str = "/dev/ttyACM0", baudrate: int = 115200, 
-                 model_path: str = None, video_source=0):
+                 model_path: str = None, model_config_path: str = None, video_source=0):
         
         self.serial_port = serial_port
         self.baudrate = baudrate
@@ -417,6 +418,7 @@ class IDANode:
         # 5. Duba Dedektörü (Yedekli Model + HSV)
         self.detector = BuoyDetector(
             model_path=model_path, 
+            config_path=model_config_path,
             image_width=640, 
             image_height=480,
             nms_threshold=self.config.get("nms_threshold", 0.6),
@@ -887,13 +889,22 @@ if __name__ == "__main__":
     
     # Otomatik model algılama
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    default_model = os.path.join(script_dir, "en_iyi_duba_modeli.onnx")
-    model_path = default_model if os.path.exists(default_model) else None
+    onnx_model = os.path.join(script_dir, "en_iyi_duba_modeli.onnx")
+    tf_model = os.path.join(script_dir, "en_iyi_duba_modeli.pb")
+    tf_config = os.path.join(script_dir, "en_iyi_duba_modeli.pbtxt")
     
-    if model_path:
-        logger.info(f"Otomatik duba tespit modeli (MobileNet-SSD) bulundu ve yüklenecek: {model_path}")
+    model_path = None
+    config_path = None
+    
+    if os.path.exists(onnx_model):
+        model_path = onnx_model
+        logger.info(f"Otomatik duba tespit modeli (MobileNet-SSD ONNX) bulundu ve yüklenecek: {model_path}")
+    elif os.path.exists(tf_model) and os.path.exists(tf_config):
+        model_path = tf_model
+        config_path = tf_config
+        logger.info(f"Otomatik duba tespit modeli (MobileNet-SSD TensorFlow PB) ve konfigürasyonu (PBTXT) bulundu: {model_path}, {config_path}")
     else:
-        logger.warning("MobileNet-SSD ONNX model dosyası ('en_iyi_duba_modeli.onnx') bulunamadı. HSV yedek modunda başlatılıyor.")
+        logger.warning("MobileNet-SSD model dosyaları ('en_iyi_duba_modeli.onnx' veya '.pb'/'.pbtxt' ikilisi) bulunamadı. HSV yedek modunda başlatılıyor.")
         
-    node = IDANode(serial_port=port, baudrate=baud, model_path=model_path)
+    node = IDANode(serial_port=port, baudrate=baud, model_path=model_path, model_config_path=config_path)
     node.start()

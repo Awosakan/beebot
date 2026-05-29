@@ -108,6 +108,34 @@ def run_test():
             assert abs(bbox[0] - 485) <= 2, "Sarı X koordinatı yanlış!"
             
     print("-> MobileNetV3-SSD Çözümleme ve Geri Eşleme Testi [OK]")
+    
+    # 4. Gerçek Model Yükleme ve Doğrulama Testi
+    print("\n[TEST 3] İndirilen Gerçek MobileNetV3-SSD Modelinin Yüklenmesi Test Ediliyor...")
+    target_dir = os.path.join(os.path.dirname(__file__), "..", "high_level", "src")
+    real_model_path = os.path.join(target_dir, "en_iyi_duba_modeli.pb")
+    real_config_path = os.path.join(target_dir, "en_iyi_duba_modeli.pbtxt")
+    
+    if os.path.exists(real_model_path) and os.path.exists(real_config_path):
+        try:
+            real_detector = BuoyDetector(
+                model_path=real_model_path,
+                config_path=real_config_path,
+                image_width=640,
+                image_height=480
+            )
+            print("-> Gerçek model OpenCV DNN ile başarıyla yüklendi! [OK]")
+            
+            # Gerçek model üzerinde çıkarım testi
+            for _ in range(3):
+                raw_dets = real_detector.detect(frame)
+            print(f"-> Gerçek model üzerinde çıkarım yapıldı. Tespit edilen nesne sayısı: {len(raw_dets)} [OK]")
+        except Exception as e:
+            print(f"Hata: Gerçek model yüklenirken veya çıkarım yapılırken hata oluştu: {e}")
+            sys.exit(1)
+    else:
+        print("Hata: İndirilen model dosyaları bulunamadı!")
+        sys.exit(1)
+        
     print("\n=== TÜM TESTLER BAŞARIYLA GEÇİLDİ! ===")
 
 if __name__ == "__main__":
