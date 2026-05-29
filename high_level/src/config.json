@@ -30,6 +30,9 @@
     "lidar_enabled": true,
     "lidar_port": "/dev/ttyUSB0",
     "lidar_yaw_offset": 0.0,
+    "roi_ymin_ratio": 0.3,
+    "roi_ymax_ratio": 0.8,
+    "hsv_min_pixel_ratio": 0.05,
     "yolo_classes": {
         "0": "orange_gate",
         "1": "yellow_obstacle",

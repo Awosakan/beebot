@@ -17,12 +17,18 @@ class BuoyDetector:
                  hfov: float = 80.0,  # Derece cinsinden Yatay Görüş Açısı (Horizontal Field of View)
                  conf_threshold: float = 0.35,
                  nms_threshold: float = 0.6,
-                 classes_dict: dict = None):
+                 classes_dict: dict = None,
+                 roi_ymin_ratio: float = 0.3,
+                 roi_ymax_ratio: float = 0.8,
+                 hsv_min_pixel_ratio: float = 0.05):
         
         self.image_width = image_width
         self.image_height = image_height
         self.conf_threshold = conf_threshold
         self.nms_threshold = nms_threshold
+        self.roi_ymin_ratio = roi_ymin_ratio
+        self.roi_ymax_ratio = roi_ymax_ratio
+        self.hsv_min_pixel_ratio = hsv_min_pixel_ratio
         
         # Kamera Parametreleri (Odak Uzaklığı - Focal Length Hesaplama)
         self.hfov_rad = math.radians(hfov)
@@ -51,26 +57,26 @@ class BuoyDetector:
         
         if model_path:
             try:
-                # OpenCV DNN ile ONNX modelini yükle
-                self.net = cv2.dnn.readNetFromONNX(model_path)
+                # OpenCV DNN ile MobileNetV3-SSD modelini yükle
+                self.net = cv2.dnn.readNet(model_path)
                 self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
                 
                 # [GPU Hızlandırma Optimizasyonu]: Adreno 630 GPU üzerinde OpenCL veya Vulkan ile çalıştır
                 try:
                     self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_OPENCL)
-                    logger.info("Performans Optimizasyonu: YOLO Çıkarımı GPU (OpenCL) üzerine yönlendirildi.")
+                    logger.info("Performans Optimizasyonu: MobileNet-SSD Çıkarımı GPU (OpenCL) üzerine yönlendirildi.")
                 except Exception:
                     try:
                         self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_VULKAN)
-                        logger.info("Performans Optimizasyonu: YOLO Çıkarımı GPU (Vulkan) üzerine yönlendirildi.")
+                        logger.info("Performans Optimizasyonu: MobileNet-SSD Çıkarımı GPU (Vulkan) üzerine yönlendirildi.")
                     except Exception:
                         self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
                         logger.info("Performans Optimizasyonu: GPU hedef atanamadı, çıkarım CPU (ARM NEON) üzerinde yapılacak.")
                 
                 self.use_fallback = False
-                logger.info(f"YOLO ONNX modeli başarıyla yüklendi: {model_path}")
+                logger.info(f"MobileNet-SSD modeli başarıyla yüklendi: {model_path}")
             except Exception as e:
-                logger.error(f"YOLO modeli yüklenemedi: {e}. HSV Renk Filtreleme moduna geçiliyor.")
+                logger.error(f"MobileNet-SSD modeli yüklenemedi: {e}. HSV Renk Filtreleme moduna geçiliyor.")
                 self.use_fallback = True
         else:
             logger.info("Model dosyası belirtilmedi. HSV Renk Filtreleme modunda çalışılıyor.")
@@ -247,64 +253,136 @@ class BuoyDetector:
         if self.use_fallback:
             raw_dets = self._detect_hsv(frame, pitch, roll)
         else:
-            raw_dets = self._detect_yolo(frame, pitch, roll)
+            # --- Horizon ROI Cropping (Ufuk Kırpması) ---
+            ymin_px = int(self.roi_ymin_ratio * h)
+            ymax_px = int(self.roi_ymax_ratio * h)
+            
+            # Kırpılmış görüntüyü al
+            cropped_frame = frame[ymin_px:ymax_px, 0:w]
+            
+            # SSD Çıkarımını kırpılmış görüntü üzerinde yap, ymin_px offsetini geçir
+            raw_dets = self._detect_ssd(frame, cropped_frame, ymin_px, pitch, roll)
             
         # [Senaryo 6 Önlemi] Zamansal doğrulama filtresi uygula
         return self.temporal_filter(raw_dets)
 
-    def _detect_yolo(self, frame, pitch: float = 0.0, roll: float = 0.0) -> list:
+    def _verify_color_hsv(self, frame, box: list) -> str:
         """
-        OpenCV DNN ile YOLOv8 ONNX modeli kullanarak çıkarım yapar.
+        Duba kutusunun içinde lokalize HSV renk filtrelemesi koşturur.
+        Baskın olan rengi tespit edip sınıf etiketini döndürür.
         """
-        blob = cv2.dnn.blobFromImage(frame, 1/255.0, (640, 640), swapRB=True, crop=False)
+        x, y, w, h = box
+        
+        # Sınır kontrolleri
+        x_min = max(0, min(x, self.image_width - 1))
+        y_min = max(0, min(y, self.image_height - 1))
+        x_max = max(0, min(x + w, self.image_width))
+        y_max = max(0, min(y + h, self.image_height))
+        
+        roi = frame[y_min:y_max, x_min:x_max]
+        if roi.size == 0:
+            return None
+            
+        hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        
+        # Renk aralıkları tanımları (detect_hsv ile birebir uyumlu)
+        color_ranges = {
+            "orange_gate": [((5, 100, 80), (15, 255, 255)), ((165, 100, 80), (175, 255, 255))],
+            "yellow_obstacle": [((20, 80, 80), (35, 255, 255))],
+            "target_red": [((0, 120, 60), (10, 255, 255)), ((170, 120, 60), (180, 255, 255))],
+            "target_green": [((35, 60, 60), (85, 255, 255))],
+            "target_blue": [((95, 100, 60), (135, 255, 255))]
+        }
+        
+        color_counts = {}
+        for name, ranges in color_ranges.items():
+            mask = None
+            for lower, upper in ranges:
+                m = cv2.inRange(hsv_roi, np.array(lower), np.array(upper))
+                mask = m if mask is None else cv2.bitwise_or(mask, m)
+            color_counts[name] = cv2.countNonZero(mask)
+            
+        best_color = max(color_counts, key=color_counts.get)
+        max_pixels = color_counts[best_color]
+        total_pixels = roi.shape[0] * roi.shape[1]
+        
+        # Eğer en baskın rengin kapladığı alan kutunun en az %5'i ise doğrulanmış kabul et
+        if total_pixels > 0 and (max_pixels / float(total_pixels)) >= self.hsv_min_pixel_ratio:
+            return best_color
+            
+        return None
+
+    def _detect_ssd(self, original_frame, cropped_frame, ymin_offset: int, pitch: float = 0.0, roll: float = 0.0) -> list:
+        """
+        OpenCV DNN ile MobileNetV3-SSD modelini kırpılmış görüntü üzerinde çalıştırır.
+        """
+        h_cropped, w_cropped = cropped_frame.shape[:2]
+        
+        # MobileNet-SSD genellikle 320x320 girdi bekler
+        blob = cv2.dnn.blobFromImage(cropped_frame, 1.0, (320, 320), swapRB=True, crop=False)
         self.net.setInput(blob)
         
+        # Çıkarım yap
         outputs = self.net.forward()
-        outputs = np.transpose(outputs[0], (1, 0))
         
-        boxes = []
-        confidences = []
-        class_ids = []
+        # SSD çıktı formatı: [1, 1, N, 7]
+        # Her bir satır: [batch_id, class_id, confidence, left, top, right, bottom]
+        detections = []
         
-        for row in outputs:
-            classes_scores = row[4:]
-            class_id = np.argmax(classes_scores)
-            confidence = classes_scores[class_id]
+        if len(outputs.shape) < 4:
+            return detections
+            
+        num_detections = outputs.shape[2]
+        
+        for i in range(num_detections):
+            row = outputs[0, 0, i]
+            confidence = float(row[2])
             
             if confidence >= self.conf_threshold:
-                x_center, y_center, w, h = row[0:4]
-                x_factor = self.image_width / 640.0
-                y_factor = self.image_height / 640.0
+                class_id = int(row[1])
                 
-                x = int((x_center - w/2) * x_factor)
-                y = int((y_center - h/2) * y_factor)
-                width = int(w * x_factor)
-                height = int(h * y_factor)
+                # Koordinatlar normalleştirilmiştir (0.0 - 1.0), kırpılmış görüntü boyutlarıyla çarp
+                left = int(row[3] * w_cropped)
+                top = int(row[4] * h_cropped)
+                right = int(row[5] * w_cropped)
+                bottom = int(row[6] * h_cropped)
                 
-                boxes.append([x, y, width, height])
-                confidences.append(float(confidence))
-                class_ids.append(class_id)
+                width = right - left
+                height = bottom - top
                 
-        indices = cv2.dnn.NMSBoxes(boxes, confidences, self.conf_threshold, self.nms_threshold)
-        
-        detections = []
-        for i in indices:
-            idx = i[0] if isinstance(i, (list, np.ndarray)) else i
-            box = boxes[idx]
-            class_id = class_ids[idx]
-            conf = confidences[idx]
-            
-            distance, bearing, is_truncated = self.estimate_distance_and_bearing(box, pitch, roll)
-            
-            detections.append({
-                "class": self.classes.get(class_id, "unknown"),
-                "bbox": box,
-                "confidence": conf,
-                "distance": distance,
-                "bearing": bearing,
-                "is_truncated": is_truncated
-            })
-            
+                # Orijinal 640x480 görüntüsüne geri eşle
+                original_left = left
+                original_top = top + ymin_offset
+                
+                # Bounding box sınırlarını kontrol et
+                original_left = max(0, min(original_left, self.image_width - 1))
+                original_top = max(0, min(original_top, self.image_height - 1))
+                width = max(1, min(width, self.image_width - original_left))
+                height = max(1, min(height, self.image_height - original_top))
+                
+                box = [original_left, original_top, width, height]
+                
+                # --- Hibrit Renk Doğrulaması ---
+                # Bounding box içerisindeki renk analizini yap
+                verified_class = self._verify_color_hsv(original_frame, box)
+                
+                # Eğer renk doğrulandıysa o rengi ata, yoksa SSD'nin tahmin ettiği sınıfa güven
+                if verified_class:
+                    final_class = verified_class
+                else:
+                    final_class = self.classes.get(class_id, "unknown")
+                    
+                distance, bearing, is_truncated = self.estimate_distance_and_bearing(box, pitch, roll)
+                
+                detections.append({
+                    "class": final_class,
+                    "bbox": box,
+                    "confidence": confidence,
+                    "distance": distance,
+                    "bearing": bearing,
+                    "is_truncated": is_truncated
+                })
+                
         return detections
 
     def _detect_hsv(self, frame, pitch: float = 0.0, roll: float = 0.0) -> list:

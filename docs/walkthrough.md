@@ -91,3 +91,21 @@ Kullanıcının talebi üzerine proje **"Beebot"** olarak yeniden adlandırılm�
     4.  Tüm kodlar ve yeni eklenen dosyalar (`STM32/Core/Inc/rc.h`, `STM32/Core/Src/rc.c`, `low_level/include/rc.h`, `low_level/src/rc.c`, `high_level/src/astar.py` vb.) stage edilerek commitlendi.
     5.  `scratch/create_beebot_repo.py` içerisinde bulunan hassas GitHub Token bilgisi temizlendi, çevre değişkenine (`os.environ.get`) bağlandı ve commit amend edilerek push korumasına takılmadan temiz bir şekilde yeni repoya (`main` branch) pushlandı.
     6.  Kullanıcının geri bildirimi doğrultusunda, donanım fiyat analizi raporundaki donanım bağlantı şeması (mermaids formatında) Türkçe (`README_TR.md`) ve İngilizce (`README.md`) dökümanlarına eklendi.
+
+---
+
+## 5. MobileNetV3-SSD Model Geçişi ve Optimizasyonlar
+
+YOLOv8n modelinin OnePlus 6 CPU'sunda yarattığı termal yükü azaltmak amacıyla sistem tamamen **MobileNetV3-SSD** model mimarisine geçirilmiştir.
+
+*   **Gerçekleştirilen Kod Değişiklikleri:**
+    1.  **[config.json](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/config.json):** Ufuk kırpması (`roi_ymin_ratio`, `roi_ymax_ratio`) ve lokal renk analizi oranı (`hsv_min_pixel_ratio`) konfigürasyona eklendi.
+    2.  **[detector.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/detector.py):** 
+        *   `BuoyDetector.__init__` MobileNet SSD (ONNX) modeli yükleyebilecek şekilde güncellendi.
+        *   **Horizon ROI Cropping:** `detect()` içinde görüntünün sadece su hattı kırpılarak (`ymin_px` ve `ymax_px` sınırlarında) modele beslendi ve saptanan bbox koordinatları orijinal frame sistemine geri eşlendi.
+        *   **Hybrid SSD + Localized HSV:** Her sınırlayıcı kutunun içinde dinamik bir HSV renk dağılım analizi yapılarak dubaların renkleri (`orange_gate`, `yellow_obstacle`, `target_red`, `target_green`, `target_blue`) yüksek doğrulukla doğrulandı.
+        *   `_detect_yolo` metodu yerine SSD çıktı matris yapısını `(1, 1, N, 7)` ayrıştıran `_detect_ssd` metodu yazıldı.
+    3.  **[main.py](file:///c:/Users/Şahakan/Desktop/aydede/high_level/src/main.py):** `YOLOInferenceWorker` sınıfı `SSDInferenceWorker` olarak güncellendi ve tüm otonom log çıktıları MobileNet-SSD'ye uyarlandı.
+*   **Doğrulama Sonuçları:**
+    *   `scratch/test_ssd_detection.py` yazıldı ve koşturuldu. Hem HSV fallback modunun hem de SSD çıkarım + lokalize renk doğrulaması ve ROI koordinat eşleme işlemlerinin başarıyla çalıştığı teyit edildi (`TÜM TESTLER BAŞARIYLA GEÇİLDİ!`).
+    *   `test_stage10.py` çalıştırılarak tüm FSM durum zaman aşımları, PID motor rampası ve kamikaze duba kaybı koruma stratejileri başarıyla doğrulandı.

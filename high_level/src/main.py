@@ -72,9 +72,9 @@ class VideoGrabber(threading.Thread):
         self.running = False
 
 
-class YOLOInferenceWorker(threading.Thread):
+class SSDInferenceWorker(threading.Thread):
     """
-    YOLO çıkarımının (detector.detect) ana otonomi döngüsünü (24Hz) 
+    MobileNet-SSD çıkarımının (detector.detect) ana otonomi döngüsünü (24Hz) 
     bloklamasını engellemek amacıyla asenkron çıkarım yapan thread sınıfı.
     """
     def __init__(self, detector):
@@ -118,12 +118,12 @@ class YOLOInferenceWorker(threading.Thread):
                     
             if frame_to_process is not None:
                 try:
-                    # YOLO/HSV tespiti gerçekleştir
+                    # MobileNet-SSD/HSV tespiti gerçekleştir
                     dets = self.detector.detect(frame_to_process, pitch=p, roll=r)
                     with self.lock:
                         self.latest_detections = dets
                 except Exception as e:
-                    logger.error(f"YOLO Thread çıkarım hatası: {e}")
+                    logger.error(f"MobileNet-SSD Thread çıkarım hatası: {e}")
                     
             time.sleep(0.005) # CPU'yu aşırı yormamak için kısa bekleme
             
@@ -420,7 +420,10 @@ class IDANode:
             image_width=640, 
             image_height=480,
             nms_threshold=self.config.get("nms_threshold", 0.6),
-            classes_dict=self.config.get("yolo_classes", None)
+            classes_dict=self.config.get("yolo_classes", None),
+            roi_ymin_ratio=self.config.get("roi_ymin_ratio", 0.3),
+            roi_ymax_ratio=self.config.get("roi_ymax_ratio", 0.8),
+            hsv_min_pixel_ratio=self.config.get("hsv_min_pixel_ratio", 0.05)
         )
         
         # Kamera donma/kopma kontrolü değişkenleri
@@ -429,12 +432,12 @@ class IDANode:
         self.last_frame = None
         self.frozen_frames_counter = 0
         
-        # Çoklu kamera ve YOLO worker'larının tanımlanması
+        # Çoklu kamera ve SSD worker'larının tanımlanması
         self.video_sources = self.config.get("video_sources", [0])
         if not isinstance(self.video_sources, list):
             self.video_sources = [self.video_sources]
             
-        self.yolo_workers = [YOLOInferenceWorker(self.detector) for _ in self.video_sources]
+        self.ssd_workers = [SSDInferenceWorker(self.detector) for _ in self.video_sources]
         self.grabbers = []
         self.caps = []
         
@@ -621,10 +624,10 @@ class IDANode:
                 self.grabbers[0][0].read()
             logger.info("Kamera warmup tamamlandı.")
             
-        # Asenkron YOLO çıkarım thread'lerini başlat
-        for idx, worker in enumerate(self.yolo_workers):
+        # Asenkron MobileNet-SSD çıkarım thread'lerini başlat
+        for idx, worker in enumerate(self.ssd_workers):
             worker.start()
-            logger.info(f"Asenkron YOLO Çıkarım Worker thread {idx} başlatıldı.")
+            logger.info(f"Asenkron MobileNet-SSD Çıkarım Worker thread {idx} başlatıldı.")
             
         # 4.5. LIDAR İşçisini Başlat
         if self.lidar_worker:
@@ -722,8 +725,8 @@ class IDANode:
                         if ret and frame is not None:
                             camera_lost = False
                             frames_to_log.append(frame)
-                            self.yolo_workers[0].update_frame(frame, pitch, roll)
-                            all_detections.extend(self.yolo_workers[0].get_latest_detections())
+                            self.ssd_workers[0].update_frame(frame, pitch, roll)
+                            all_detections.extend(self.ssd_workers[0].get_latest_detections())
                     else:
                         logger.error("Failsafe: Hiçbir kamera aktif değil!")
                 else:
@@ -731,7 +734,7 @@ class IDANode:
                         ret, frame = grabber.read()
                         if ret and frame is not None:
                             camera_lost = False
-                            worker = self.yolo_workers[idx]
+                            worker = self.ssd_workers[idx]
                             worker.update_frame(frame, pitch, roll)
                             dets = worker.get_latest_detections()
                             
@@ -832,13 +835,13 @@ class IDANode:
             except Exception as e:
                 logger.error(f"Grabber {idx} thread join hatası: {e}")
                 
-        # YOLO worker thread'lerini durdur
-        for idx, worker in enumerate(self.yolo_workers):
+        # MobileNet-SSD worker thread'lerini durdur
+        for idx, worker in enumerate(self.ssd_workers):
             worker.stop()
             try:
                 worker.join(timeout=1.0)
             except Exception as e:
-                logger.error(f"YOLO worker {idx} thread join hatası: {e}")
+                logger.error(f"MobileNet-SSD worker {idx} thread join hatası: {e}")
                 
         # LIDAR worker thread'ini durdur
         if self.lidar_worker:
@@ -888,9 +891,9 @@ if __name__ == "__main__":
     model_path = default_model if os.path.exists(default_model) else None
     
     if model_path:
-        logger.info(f"Otomatik duba tespit modeli bulundu ve yüklenecek: {model_path}")
+        logger.info(f"Otomatik duba tespit modeli (MobileNet-SSD) bulundu ve yüklenecek: {model_path}")
     else:
-        logger.warning("YOLO ONNX model dosyası ('en_iyi_duba_modeli.onnx') bulunamadı. HSV yedek modunda başlatılıyor.")
+        logger.warning("MobileNet-SSD ONNX model dosyası ('en_iyi_duba_modeli.onnx') bulunamadı. HSV yedek modunda başlatılıyor.")
         
     node = IDANode(serial_port=port, baudrate=baud, model_path=model_path)
     node.start()

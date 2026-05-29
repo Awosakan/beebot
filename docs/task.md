@@ -1,17 +1,19 @@
-# Donanım Entegrasyonu Görev Listesi
+# MobileNetV3-SSD Geçiş Görev Listesi
 
-- `[x]` **Görev 1: Seri İletişim Protokolü Güncellemesi (68 Bayt Telemetri)**
-  - `[x]` STM32 `protocol.h` içerisindeki `Telemetry_t` yapısına `leak_detected`, `battery_current` ve `front_ultrasonic_m` eklenmesi ve statik assert'ün 68 bayt yapılması.
-  - `[x]` Python `protocol.py` içerisindeki format dizesinin `<ddffBfffffffBHHBBff` yapılması, pack/unpack fonksiyonlarının güncellenmesi ve boyut doğrulamalarının 68 bayt yapılması.
-- `[x]` **Görev 2: High-Level Python Kodunda Çift Kamera ve RPLIDAR A1 Entegrasyonu**
-  - `[x]` `config.json` dosyasına çift kamera (`video_sources`), açı sapmaları (`camera_bearing_offsets_deg`) ve LIDAR konfigürasyonlarının eklenmesi.
-  - `[x]` `main.py` içinde birden fazla kamera için asenkron `VideoGrabber` listesi başlatılması ve YOLO çıkarımında açı offsetleri uygulanarak tespitlerin birleştirilmesi.
-  - `[x]` `main.py` içinde `LidarWorker` asenkron okuyucu thread'i eklenerek RPLIDAR A1 verilerinin taranması, downsample edilmesi ve costmap'e `yellow_obstacle` olarak beslenmesi.
-- `[x]` **Görev 3: Low-Level STM32 Firmware Entegrasyonu (Sensörler ve Emniyet)**
-  - `[x]` `sensors.c` / `sensors.h` içinde JSN-SR04T ultrasonik sensör okuma fonksiyonunun (`sensors_read_ultrasonic()`) yazılması.
-  - `[x]` `sensors.c` / `sensors.h` içinde Güç Modülü akım okuma fonksiyonunun (`sensors_current_read()`) yazılması.
-  - `[x]` `safety.c` / `safety.h` içinde sızıntı sensörü pin okuması (PA4) ve sızıntı durumunda `MODE_EMERGENCY` tetiklenmesi.
-  - `[x]` `main.c` içinde GPIO pin kurulumlarının (PA4 sızıntı input, PA5/PB0 ultrasonik Trigger/Echo, PA0 akım) yapılması ve `Telemetry_t` yapısının doldurulması.
-- `[x]` **Görev 4: Uyum Testleri ve Doğrulama**
-  - `[x]` `test_stm32_compatibility.py` test script'inin 68 baytlık formata göre güncellenmesi.
-  - `[x]` `test_stm32_compatibility.py` testinin çalıştırılarak doğrulanması.
+- `[x]` **Görev 1: Konfigürasyon Güncellemeleri**
+  - `[x]` `config.json` dosyasına `roi_ymin_ratio`, `roi_ymax_ratio` ve `hsv_min_pixel_ratio` parametrelerinin eklenmesi.
+- `[x]` **Görev 2: `detector.py` Dosyasının MobileNetV3-SSD ile Yeniden Yapılandırılması**
+  - `[x]` `BuoyDetector.__init__` içinde SSD model yapısının kurulması.
+  - `[x]` `detect()` içinde Horizon ROI Kırpması (Ufuk Kırpması) ve koordinat geri eşlemenin eklenmesi.
+  - `[x]` Lokalize HSV renk doğrulaması (`_verify_color_hsv`) fonksiyonunun entegre edilmesi.
+  - `[x]` `_detect_yolo` yerine `_detect_ssd` yazılarak `(1, 1, N, 7)` SSD çıktısının çözümlenmesi.
+- `[x]` **Görev 3: `main.py` Otonomi Düğümünün Güncellenmesi**
+  - `[x]` `YOLOInferenceWorker` -> `SSDInferenceWorker` sınıf adı ve mantığının güncellenmesi.
+  - `[x]` Log mesajları ve tanımların MobileNet-SSD'ye uyarlanması.
+- `[x]` **Görev 4: Test ve Doğrulama**
+  - `[x]` `scratch/test_ssd_detection.py` test betiğinin yazılması ve çalıştırılması.
+  - `[x]` `test_stm32_compatibility.py` haberleşme testinin doğrulanması.
+  - `[x]` Simülasyon (`sitl_simulator.py` / `test_stage10.py`) ile otonom rota planlamanın doğrulanması.
+- `[x]` **Görev 5: Raporlama ve GitHub Reposuna Gönderim**
+  - `[x]` Rapor dosyalarının (`docs/`) güncellenmesi.
+  - `[x]` Tüm değişikliklerin committen geçirilip pushlanması.
