@@ -249,3 +249,7 @@ Projede en son gerçekleştirilen kritik düzeltmeler ve mimari iyileştirmeler 
 3. **`beebot_kontrol.py` Tek Tuşla Yönetim Sihirbazı:**
    * Yarış günü donanım ve yazılımların hızlı kontrolü için terminal karmaşasını bitiren bir yönetim sihirbazı geliştirildi. Bu panel üzerinden tek tıkla eksik kütüphaneler kurulabilir, port yetkileri (`chmod 666`) ayarlanabilir ve dry-run testleri başlatılabilir.
 
+4. **Fütüristik Katamaran Gövdesi ve Modüler Batarya Kızak Tasarımı (CAD/SolidWorks):**
+   * Teknofest 2026 şartnamesine tam uyumlu, $120 \times 80 \times 40\text{ cm}$ boyutlarında fütüristik dalga delici (wave-piercing) katamaran gövdesi ve modüler kızaklı batarya tepsisi tasarımları yapıldı.
+   * Türkçe ve İngilizce SolidWorks kurulumlarında plane, sketch ve extrüzyon yönü uyuşmazlıkları nedeniyle yaşanan tüm VBA çalışma zamanı hataları (özellikle **Runtime Error 91**) giderildi. Unicode korumalı `SelectPlane` ve dinamik `RenameLastFeature` algoritmalarıyla %100 dil-bağımsız çalışan VBA makroları [catamaran_solidworks_macro.md](file:///c:/Users/Şahakan/Desktop/aydede/catamaran_solidworks_macro.md) dosyasına eklendi.
+

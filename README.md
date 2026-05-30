@@ -249,3 +249,7 @@ The following critical fixes and architectural improvements have been recently i
 3. **`beebot_kontrol.py` One-Click CLI Wizard:**
    * Introduced a unified management wizard script in the root directory to streamline race-day hardware configurations. It handles automatic missing package validation, USB port permission mapping (`chmod 666`), dry-run testing, and autonomous navigation launch.
 
+4. **Futuristic Catamaran Hull & Modular Battery Sliding Tray Design (CAD/SolidWorks):**
+   * Designed a futuristic wave-piercing catamaran hull ($120 \times 80 \times 40\text{ cm}$) and modular battery drawer system conforming to Teknofest 2026 specifications.
+   * Fixed all VBA runtime errors (specifically **Runtime Error 91**) caused by plane, sketch, and extrusion direction discrepancies in Turkish and English SolidWorks environments. Rebuilt the VBA macros with Unicode-safe `SelectPlane` functions and dynamic `RenameLastFeature` tree traversals inside [catamaran_solidworks_macro.md](file:///c:/Users/Şahakan/Desktop/aydede/catamaran_solidworks_macro.md).
+

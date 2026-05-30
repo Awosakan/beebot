@@ -148,8 +148,11 @@ Yarış esnasında yaşanabilecek olası olumsuz durumlar ve alınacak önlemler
 
 ## 7. Ekstra Yarış Günü ve Son Değişiklik Kontrolleri
 
-Yarış günü suya indirme işleminden hemen önce en son yapılan yazılım güncellemelerinin fiziki olarak doğrulandığından emin olun:
+Yarış günü suya indirme işleminden hemen önce en son yapılan donanım ve yazılım güncellemelerinin fiziki olarak doğrulandığından emin olun:
 
+- [ ] **SolidWorks CAD ve VBA Makro Doğrulaması:**
+  * Türkçe SolidWorks kurulumlarında plane/sketch adlandırma ve **Runtime Error 91** hatalarını gideren güncellenmiş makro kodlarının [catamaran_solidworks_macro.md](file:///c:/Users/Şahakan/Desktop/aydede/catamaran_solidworks_macro.md) dosyasından alınıp SolidWorks VBA editörüne (Tools > Macro) aktarıldığını kontrol edin.
+  * Makro çalıştırılmadan önce boş bir Parça (Part) belgesinin açık olduğundan emin olun.
 - [ ] **Yapay Zeka Model Ağırlıklarının Kontrolü:**
   * OnePlus 6 üzerindeki otonomi dizininde `high_level/src/models/` klasörünün altında `mobilenet_v3_ssd.onnx` ve `mobilenet_v3_ssd.txt` (etiket) dosyalarının eksiksiz bulunduğunu kontrol edin.
 - [ ] **STM32 Son Derleme (Build) Doğrulaması:**
