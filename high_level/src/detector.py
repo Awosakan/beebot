@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import logging
 import math
+import threading
 
 logger = logging.getLogger("IDA_Detector")
 logger.setLevel(logging.INFO)
@@ -106,6 +107,7 @@ class BuoyDetector:
         self.next_track_id = 0
         self.tracks = []  # Aktif izler listesi
         self.filter_alpha = 0.35  # Jitter filtreleme EMA ağırlığı (0.0: tam sönümleme, 1.0: filtre yok)
+        self.lock = threading.Lock() # Çoklu thread yarışlarını önlemek için kilit
 
     def check_lens_obstruction(self, frame) -> bool:
         """
@@ -251,35 +253,36 @@ class BuoyDetector:
         if frame is None:
             return []
             
-        # Dinamik çözünürlük uyarlaması (Hata: 159 çözümü)
-        h, w = frame.shape[:2]
-        if w != self.image_width or h != self.image_height:
-            self.image_width = w
-            self.image_height = h
-            self.focal_length_px = (self.image_width / 2.0) / math.tan(self.hfov_rad / 2.0)
-            logger.info(f"Kamera çözünürlüğü dinamik olarak güncellendi: {w}x{h}, Odak Uzaklığı: {self.focal_length_px:.1f} px")
+        with self.lock:
+            # Dinamik çözünürlük uyarlaması (Hata: 159 çözümü)
+            h, w = frame.shape[:2]
+            if w != self.image_width or h != self.image_height:
+                self.image_width = w
+                self.image_height = h
+                self.focal_length_px = (self.image_width / 2.0) / math.tan(self.hfov_rad / 2.0)
+                logger.info(f"Kamera çözünürlüğü dinamik olarak güncellendi: {w}x{h}, Odak Uzaklığı: {self.focal_length_px:.1f} px")
+                
+            self.frame_count += 1
             
-        self.frame_count += 1
-        
-        # [Senaryo 5 Önlemi] Lens tıkanıklık kontrolü
-        if self.check_lens_obstruction(frame):
-            return []
-            
-        if self.use_fallback:
-            raw_dets = self._detect_hsv(frame, pitch, roll)
-        else:
-            # --- Horizon ROI Cropping (Ufuk Kırpması) ---
-            ymin_px = int(self.roi_ymin_ratio * h)
-            ymax_px = int(self.roi_ymax_ratio * h)
-            
-            # Kırpılmış görüntüyü al
-            cropped_frame = frame[ymin_px:ymax_px, 0:w]
-            
-            # SSD Çıkarımını kırpılmış görüntü üzerinde yap, ymin_px offsetini geçir
-            raw_dets = self._detect_ssd(frame, cropped_frame, ymin_px, pitch, roll)
-            
-        # [Senaryo 6 Önlemi] Zamansal doğrulama filtresi uygula
-        return self.temporal_filter(raw_dets)
+            # [Senaryo 5 Önlemi] Lens tıkanıklık kontrolü
+            if self.check_lens_obstruction(frame):
+                return []
+                
+            if self.use_fallback:
+                raw_dets = self._detect_hsv(frame, pitch, roll)
+            else:
+                # --- Horizon ROI Cropping (Ufuk Kırpması) ---
+                ymin_px = int(self.roi_ymin_ratio * h)
+                ymax_px = int(self.roi_ymax_ratio * h)
+                
+                # Kırpılmış görüntüyü al
+                cropped_frame = frame[ymin_px:ymax_px, 0:w]
+                
+                # SSD Çıkarımını kırpılmış görüntü üzerinde yap, ymin_px offsetini geçir
+                raw_dets = self._detect_ssd(frame, cropped_frame, ymin_px, pitch, roll)
+                
+            # [Senaryo 6 Önlemi] Zamansal doğrulama filtresi uygula
+            return self.temporal_filter(raw_dets)
 
     def _verify_color_hsv(self, frame, box: list) -> str:
         """

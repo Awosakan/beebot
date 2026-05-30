@@ -157,6 +157,11 @@ Yarış günü suya indirme işleminden hemen önce en son yapılan yazılım g�
   * Oluşan yeni `beebot.bin` dosyasını DFU Guide yönergelerine uygun olarak STM32 otopilotuna flashlayın. Eski kilitlenme riski taşıyan binary sürümünün kalmadığından emin olun.
 - [ ] **beebot_kontrol.py ile Donanım İzinlerinin Yenilenmesi:**
   * OnePlus 6 telefonu her yeniden başlatıldığında veya USB kablosu sökülüp takıldığında `/dev/ttyUSB0` ve Lidar port izinleri sıfırlanabilir. Sihirbazın 4. seçeneği olan "Seri Port ve Lidar İzinlerini Tanımla (chmod 666)" adımını koşturmayı unutmayın.
+- [ ] **Son Güvenlik ve Performans Yamalarının Doğrulanması (Kritik):**
+  * STM32 telemetri paket formatındaki PROTOCOL_VERSION (0x01) bayt güncellemesinin Python tarafında başarıyla ayrıştırıldığını kontrol edin.
+  * RC USART3 kesme callback'inin çalıştığını ve kumandadan mod değişimleri ile motor kontrol sinyallerinin sorunsuz alındığını doğrulayın.
+  * A* planlayıcısının `closed_set` ve 10000 iterasyon limiti ile hızlandırılmış halini test edin.
+  * Çoklu thread yarışlarını önlemek için Python SSD worker kilidi ve STM32 volatile float kritik bölgelerinin kararlılığını kuru testte 5 dakika çalıştırarak doğrulayın.
 
 ---
 **Teknofest 2026 Otonom İDA yarışmasında ekibimize başarılar dileriz! Beebot yarışmaya hazır!**

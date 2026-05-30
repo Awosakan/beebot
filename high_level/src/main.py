@@ -8,6 +8,7 @@ import numpy as np
 import serial
 import gc
 import math
+import json
 
 # Modüllerimizi içe aktaralım
 # Python'ın dosyayı doğrudan çalıştırma durumunu desteklemek için path eklemesi yapalım
@@ -381,7 +382,6 @@ class IDANode:
         
         if os.path.exists(self.config_path):
             try:
-                import json
                 self.config_mtime = os.path.getmtime(self.config_path)
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     loaded_config = json.load(f)
@@ -392,7 +392,6 @@ class IDANode:
         else:
             logger.warning(f"Yapılandırma dosyası bulunamadı, varsayılanlar oluşturuluyor: {self.config_path}")
             try:
-                import json
                 with open(self.config_path, "w", encoding="utf-8") as f:
                     json.dump(self.config, f, indent=4)
                 self.config_mtime = os.path.getmtime(self.config_path)
@@ -511,6 +510,7 @@ class IDANode:
         Seri porttan sürekli veri okuyan ve parser'a besleyen thread.
         Hata durumunda otomatik yeniden bağlanma (reconnect) mantığı içerir.
         """
+        reconnect_delay = 1.0
         while self.running:
             try:
                 # Sahte (Mock) seri modunda ise basitçe bekle ve veri beslemeyi sürdür
@@ -530,7 +530,7 @@ class IDANode:
                     self.ser.close()
                 except Exception:
                     pass
-                time.sleep(1.0)
+                time.sleep(reconnect_delay)
                 # Yeniden bağlanma (reconnect) girişimi
                 try:
                     if sys.platform.startswith('linux'):
@@ -541,8 +541,10 @@ class IDANode:
                                 f.write("1")
                     self.ser = serial.Serial(self.serial_port, self.baudrate, timeout=0.1)
                     logger.info("Seri port bağlantısı başarıyla yeniden kuruldu.")
+                    reconnect_delay = 1.0 # Başarılı bağlantıda bekleme süresini sıfırla (1 sn)
                 except Exception as recon_err:
                     logger.error(f"Seri port yeniden bağlanma başarısız: {recon_err}")
+                    reconnect_delay = min(reconnect_delay * 2.0, 16.0) # Başarısızlıkta bekleme süresini iki katına çıkar (maks 16 sn)
 
     def _heartbeat_loop(self):
         """
@@ -658,7 +660,6 @@ class IDANode:
                             mtime = os.path.getmtime(self.config_path)
                             if mtime > self.config_mtime:
                                 self.config_mtime = mtime
-                                import json
                                 with open(self.config_path, "r", encoding="utf-8") as f:
                                     loaded_config = json.load(f)
                                     self.config.update(loaded_config)

@@ -136,6 +136,7 @@ void StartTelemetryTask(void *argument) {
     const TickType_t xFrequency = pdMS_TO_TICKS(20); // 20ms = 50Hz (Görev 3.1)
     
     uint8_t tx_packet[128];
+    _Static_assert(sizeof(tx_packet) >= (7 + sizeof(Telemetry_t)), "tx_packet buffer too small for Telemetry packet");
     
     for (;;) {
         // A. DMA Circular Buffer'daki yeni gelen baytları ayrıştırıcıya besle
@@ -192,17 +193,30 @@ void StartTelemetryTask(void *argument) {
 
         // C. Batarya Okumasını Kritik Bölge DIŞINDA Yap (ADC polling 10ms'e kadar bloklar)
         float bat = sensors_battery_read(&hadc1);
-        global_battery_voltage = bat; // SafetyTask için paylaşılan değişken (A3 düzeltmesi)
+        
+        taskENTER_CRITICAL();
+        global_battery_voltage = bat; // SafetyTask için paylaşılan değişken (A3 düzeltmesi) - Kritik bölge korumalı
+        taskEXIT_CRITICAL();
         
         // Akım ve Ultrasonik sensörleri de kritik bölge dışında oku (blokaj önleme)
         float current_amps = sensors_current_read(&hadc1);
         float distance_m = sensors_read_ultrasonic(ULTRASONIC_TRIG_PORT, ULTRASONIC_TRIG_PIN, ULTRASONIC_ECHO_PORT, ULTRASONIC_ECHO_PIN);
         
         // Diğer Sensör Verilerini Kritik Bölge Korumasıyla Oku (Görev 3.3)
+        GPS_Data_t gps;
+        IMU_Data_t imu;
+        uint8_t current_mode;
+        uint16_t left_pwm;
+        uint16_t right_pwm;
+        uint8_t selected_color_id;
+        
         taskENTER_CRITICAL();
-        GPS_Data_t gps = sensors_get_gps();
-        IMU_Data_t imu = sensors_get_imu();
-        uint8_t current_mode = safety_get_mode();
+        gps = sensors_get_gps();
+        imu = sensors_get_imu();
+        current_mode = safety_get_mode();
+        left_pwm = global_left_pwm;
+        right_pwm = global_right_pwm;
+        selected_color_id = global_selected_color_id;
         taskEXIT_CRITICAL();
 
         // D. Telemetri Paketini Oluştur
@@ -220,25 +234,26 @@ void StartTelemetryTask(void *argument) {
         telem.yaw_rate = imu.yaw_rate;
         telem.battery = bat;
         telem.mode = current_mode;
-        telem.left_pwm = global_left_pwm;
-        telem.right_pwm = global_right_pwm;
-        telem.selected_color_id = global_selected_color_id;
+        telem.left_pwm = left_pwm;
+        telem.right_pwm = right_pwm;
+        telem.selected_color_id = selected_color_id;
         telem.leak_detected = safety_get_status().leak_detected;
         telem.battery_current = current_amps;
         telem.front_ultrasonic_m = distance_m;
 
-        // E. Paketi Seri Port Formatına Dönüştür ve Gönder (SYNC1 + SYNC2 + MsgID + Len + Payload + CRC16)
+        // E. Paketi Seri Port Formatına Dönüştür ve Gönder (SYNC1 + SYNC2 + Version + MsgID + Len + Payload + CRC16)
         tx_packet[0] = SYNC_BYTE_1;
         tx_packet[1] = SYNC_BYTE_2;
-        tx_packet[2] = MSG_STM32_TELEMETRY;
-        tx_packet[3] = sizeof(Telemetry_t);
-        memcpy(tx_packet + 4, &telem, sizeof(Telemetry_t));
+        tx_packet[2] = PROTOCOL_VERSION; // EKSİK OLAN PROTOKOL VERSİYON BAYTI EKLENDİ!
+        tx_packet[3] = MSG_STM32_TELEMETRY;
+        tx_packet[4] = sizeof(Telemetry_t);
+        memcpy(tx_packet + 5, &telem, sizeof(Telemetry_t));
         
-        uint16_t crc = calculate_crc16(tx_packet, 4 + sizeof(Telemetry_t));
-        tx_packet[4 + sizeof(Telemetry_t)] = (uint8_t)(crc & 0xFF);
-        tx_packet[5 + sizeof(Telemetry_t)] = (uint8_t)((crc >> 8) & 0xFF);
+        uint16_t crc = calculate_crc16(tx_packet, 5 + sizeof(Telemetry_t));
+        tx_packet[5 + sizeof(Telemetry_t)] = (uint8_t)(crc & 0xFF);
+        tx_packet[6 + sizeof(Telemetry_t)] = (uint8_t)((crc >> 8) & 0xFF);
         
-        uint16_t total_len = 6 + sizeof(Telemetry_t); // 59 + 6 = 65 bayt
+        uint16_t total_len = 7 + sizeof(Telemetry_t); // 68 + 7 = 75 bayt
         
         HAL_UART_Transmit(&huart1, tx_packet, total_len, 15);
 
@@ -284,7 +299,9 @@ void StartNavigationTask(void *argument) {
             else if (vra_val < 1500) color_id = 2; // Yeşil (target_green)
             else if (vra_val < 1750) color_id = 3; // Mavi (target_blue)
             else                     color_id = 4; // Sarı (yellow_obstacle)
+            taskENTER_CRITICAL();
             global_selected_color_id = color_id;
+            taskEXIT_CRITICAL();
         }
 
         // A. IMU Verisini Oku ve Complementary Filtreyi Çalıştır
@@ -340,8 +357,10 @@ void StartNavigationTask(void *argument) {
         }
         
         // Global motor komutlarını güncelle (Safety task denetimi için)
+        taskENTER_CRITICAL();
         global_left_thrust = motors.left_thrust;
         global_right_thrust = motors.right_thrust;
+        taskEXIT_CRITICAL();
 
         // D. PWM Dürtü Genişliği Hesaplama ve Uygulama (ESC Sinyali: 1000us - 2000us)
         // Kavitasyon ve mekanik yıpranmayı önlemek için Slew Rate Limiter (ivme rampası) uygulanır.
@@ -385,8 +404,10 @@ void StartNavigationTask(void *argument) {
         }
 
         // Telemetri için değerleri kaydet
+        taskENTER_CRITICAL();
         global_left_pwm = (uint16_t)left_pulse;
         global_right_pwm = (uint16_t)right_pulse;
+        taskEXIT_CRITICAL();
 
         __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, left_pulse);
         __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, right_pulse);
@@ -402,11 +423,20 @@ void StartSafetyTask(void *argument) {
     const TickType_t xFrequency = pdMS_TO_TICKS(10); // 10ms = 100Hz
     
     for (;;) {
-        float raw_volts = global_battery_voltage; // ADC çakışmasını önlemek için TelemetryTask'ın okumasını kullan (A3)
+        float raw_volts;
+        float l_thrust;
+        float r_thrust;
+        
+        taskENTER_CRITICAL();
+        raw_volts = global_battery_voltage;
+        l_thrust = global_left_thrust;
+        r_thrust = global_right_thrust;
+        taskEXIT_CRITICAL();
+        
         float current_yaw = sensors_get_yaw();
         
         // Emniyet durumunu güncelle (10 ms adım süresi ile)
-        safety_update(raw_volts, current_yaw, global_left_thrust, global_right_thrust, 10);
+        safety_update(raw_volts, current_yaw, l_thrust, r_thrust, 10);
         
         // Eğer emniyet durumu kritik bir hata tespit ettiyse, motorları anında durdur
         if (!safety_is_ok()) {
@@ -431,6 +461,13 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
         
         // Bir sonraki karakter kesmesini başlat
         HAL_UART_Receive_IT(&huart2, &gps_rx_byte, 1);
+    }
+    else if (huart->Instance == USART3) {
+        // Gelen baytı RC parser'a gönder
+        rc_parse_byte(rc_rx_byte);
+        
+        // Bir sonraki karakter kesmesini başlat
+        HAL_UART_Receive_IT(&huart3, &rc_rx_byte, 1);
     }
 }
 
@@ -460,6 +497,18 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
         (void)tmpreg;
         
         HAL_UART_Receive_IT(huart, &gps_rx_byte, 1);
+    }
+    else if (huart->Instance == USART3) {
+        // Bayrakları temizle, SR/DR oku ve kesmeli alımı yeniden başlat
+        __HAL_UART_CLEAR_OREFLAG(huart);
+        __HAL_UART_CLEAR_NEFLAG(huart);
+        __HAL_UART_CLEAR_FEFLAG(huart);
+        
+        volatile uint32_t tmpreg = huart->Instance->SR;
+        tmpreg = huart->Instance->DR;
+        (void)tmpreg;
+        
+        HAL_UART_Receive_IT(huart, &rc_rx_byte, 1);
     }
 }
 

@@ -43,12 +43,24 @@ class AStarPlanner:
         heapq.heappush(open_set, (0.0, start_idx))
         came_from = {}
         g_score = {start_idx: 0.0}
+        closed_set = set() # Ziyaret edilen düğümleri filtrelemek için closed_set
         
         # 8-yönlü hareket
         dirs = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
 
+        max_iterations = 10000 # Çözüm bulunamayan karmaşık durumlarda sonsuz döngü engeli
+        iterations = 0
+
         while open_set:
+            iterations += 1
+            if iterations > max_iterations:
+                break
+
             current_f, current = heapq.heappop(open_set)
+
+            if current in closed_set:
+                continue
+            closed_set.add(current)
 
             if current == goal_idx:
                 path = []

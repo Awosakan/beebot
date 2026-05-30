@@ -129,15 +129,25 @@ uint8_t safety_check_task_watchdogs(uint32_t dt_ms) {
 }
 
 uint8_t safety_get_mode(void) {
-    return safety_state.system_mode;
+    uint8_t mode;
+    taskENTER_CRITICAL();
+    mode = safety_state.system_mode;
+    taskEXIT_CRITICAL();
+    return mode;
 }
 
 void safety_set_mode(uint8_t mode) {
+    taskENTER_CRITICAL();
     if (safety_state.system_mode != MODE_EMERGENCY) {
         safety_state.system_mode = mode;
     }
+    taskEXIT_CRITICAL();
 }
 
 SafetyStatus_t safety_get_status(void) {
-    return safety_state;
+    SafetyStatus_t temp;
+    taskENTER_CRITICAL();
+    temp = safety_state;
+    taskEXIT_CRITICAL();
+    return temp;
 }

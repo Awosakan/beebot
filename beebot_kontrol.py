@@ -1,7 +1,7 @@
 import os
 import sys
 import subprocess
-import importlib
+import importlib.util
 import json
 import time
 
@@ -24,24 +24,24 @@ def main():
     }
     missing = []
     for lib, package in required.items():
-        try:
-            importlib.import_module(lib)
-            print(f"  [✔] {package} yuklu.")
-        except ImportError:
-            print(f"  [X] {package} EKSİK! Listeye eklendi.")
+        if importlib.util.find_spec(lib) is not None:
+            print(f"  [OK] {package} yuklu.")
+        else:
+            print(f"  [FAIL] {package} EKSİK! Listeye eklendi.")
             missing.append(package)
             
     if missing:
         print(f"\nEksik kutuphaneler otomatik kuruluyor: {', '.join(missing)}...")
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing)
-            print("  [✔] Tum kutuphaneler basariyla kuruldu!")
+            # 120 saniye zaman aşımı (timeout) eklenerek ağ kilitlenmesi engellendi
+            subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing, timeout=120)
+            print("  [OK] Tum kutuphaneler basariyla kuruldu!")
         except Exception as e:
-            print(f"  [X] Kutuphane kurulum hatasi: {e}")
+            print(f"  [FAIL] Kutuphane kurulum hatasi: {e}")
             print("Lutfen internet baglantinizi kontrol edip tekrar deneyin.")
             sys.exit(1)
     else:
-        print("  [✔] Tum kutuphaneler hazir.")
+        print("  [OK] Tum kutuphaneler hazir.")
     print("-" * 50)
 
     # 2. ADIM: USB ve Lidar Port İzinleri (Linux/Android ise)
@@ -50,9 +50,9 @@ def main():
         try:
             # Root yetkisiyle chmod yapmayi dene
             subprocess.run(["su", "-c", "chmod 666 /dev/ttyUSB* /dev/ttyACM*"], check=False)
-            print("  [✔] USB ve LIDAR port izinleri basariyla tanimlandi!")
+            print("  [OK] USB ve LIDAR port izinleri basariyla tanimlandi!")
         except Exception as e:
-            print(f"  [X] Izin tanimlama hatasi (Root izni olmayabilir): {e}")
+            print(f"  [FAIL] Izin tanimlama hatasi (Root izni olmayabilir): {e}")
     else:
         print("\n[ADIM 2] Windows isletim sistemi algilandi, USB izin adimi atlaniyor.")
     print("-" * 50)
@@ -70,24 +70,33 @@ def main():
     for name, path in tests:
         print(f"  Calistiriliyor: {name}...")
         try:
-            res = subprocess.run([sys.executable, path], capture_output=True, text=True, encoding='utf-8', errors='ignore')
+            # Testlerin kilitlenmemesi için 30 saniye zaman aşımı (timeout) eklendi
+            res = subprocess.run([sys.executable, path], capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=30)
             if res.returncode == 0:
-                print(f"    [✔] {name}: BASARILI")
+                print(f"    [OK] {name}: BASARILI")
             else:
-                print(f"    [X] {name}: BASARISIZ!")
+                print(f"    [FAIL] {name}: BASARISIZ!")
                 print(f"--- HATA DETAYI ---\n{res.stderr or res.stdout}\n-------------------")
                 all_success = False
+        except subprocess.TimeoutExpired:
+            print(f"    [FAIL] {name} test sistemi hatasi: ZAMAN AŞIMI (30 saniye)")
+            all_success = False
         except Exception as e:
-            print(f"    [X] {name} test sistemi hatasi: {e}")
+            print(f"    [FAIL] {name} test sistemi hatasi: {e}")
             all_success = False
             
     if not all_success:
         print("\n[!] DIKKAT: Bazi testler basarisiz oldu! Guvenlik nedeniyle devam etmeden once yukaridaki hatalari inceleyin.")
-        ans = input("Yine de devam etmek istiyor musunuz? (e/h): ").lower()
+        auto_mode = "--auto" in sys.argv
+        if auto_mode:
+            print("Headless/Auto mod aktif, test hatalarina ragmen otomatik devam ediliyor...")
+            ans = 'e'
+        else:
+            ans = input("Yine de devam etmek istiyor musunuz? (e/h): ").lower()
         if ans != 'e':
             sys.exit(1)
     else:
-        print("\n  [✔] Tum entegrasyon testleri BASARIYLA GECILDI!")
+        print("\n  [OK] Tum entegrasyon testleri BASARIYLA GECILDI!")
     print("-" * 50)
 
     # 4. ADIM: Yarış Ayarları ve config.json Güncelleme
@@ -99,13 +108,18 @@ def main():
                 config_data = json.load(f)
                 
             print(f"  Mevcut Hedef Renk: {config_data.get('target_color', 'Bilinmiyor')}")
-            print("  Hedef rengi degistirmek istiyor musunuz?")
-            print("    1: target_red (Kirmizi - Varsayilan)")
-            print("    2: target_green (Yesil)")
-            print("    3: target_blue (Mavi)")
-            print("    S: Degistirme, Mevcut Kalsin")
-            
-            color_choice = input("  Seciminiz (1/2/3/S): ").strip().upper()
+            auto_mode = "--auto" in sys.argv
+            if auto_mode:
+                print("  Headless/Auto mod aktif, mevcut renk degistirilmeden korunuyor.")
+                color_choice = "S"
+            else:
+                print("  Hedef rengi degistirmek istiyor musunuz?")
+                print("    1: target_red (Kirmizi - Varsayilan)")
+                print("    2: target_green (Yesil)")
+                print("    3: target_blue (Mavi)")
+                print("    S: Degistirme, Mevcut Kalsin")
+                color_choice = input("  Seciminiz (1/2/3/S): ").strip().upper()
+                
             if color_choice == "1":
                 config_data["target_color"] = "target_red"
             elif color_choice == "2":
@@ -116,11 +130,11 @@ def main():
             # Kaydet
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config_data, f, indent=4)
-            print(f"  [✔] config.json basariyla guncellendi! Yeni hedef renk: {config_data['target_color']}")
+            print(f"  [OK] config.json basariyla guncellendi! Yeni hedef renk: {config_data['target_color']}")
         except Exception as e:
-            print(f"  [X] config.json guncellenirken hata olustu: {e}")
+            print(f"  [FAIL] config.json guncellenirken hata olustu: {e}")
     else:
-        print("  [X] config.json bulunamadi, yapilandirma adimi atlaniyor.")
+        print("  [FAIL] config.json bulunamadi, yapilandirma adimi atlaniyor.")
     print("-" * 50)
 
     # 5. ADIM: Otonom Başlatma
@@ -137,7 +151,7 @@ def main():
     if port == "MOCK":
         print("  [!] STM32 bagli bulunamadi. Simulasyon (MOCK) modunda baslatiliyor.")
     else:
-        print(f"  [✔] STM32 baglantisi kuruluyor: {port}")
+        print(f"  [OK] STM32 baglantisi kuruluyor: {port}")
         
     main_path = "high_level/src/main.py"
     print("\n>>> Otonom Kontrol Baslatildi. Durdurmak icin Ctrl+C tuslarina basin. <<<\n")
